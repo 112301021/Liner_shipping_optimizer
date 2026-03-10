@@ -1,6 +1,7 @@
 import random
 import numpy as np
 from typing import List
+from multiprocessing import Pool
 
 from src.optimization.data import Problem
 from src.utils.config import Config
@@ -160,8 +161,7 @@ class SimpleGA:
 
         for gen in range(self.generations):
 
-            population.sort(key=lambda x: x.fitness, reverse=True)
-
+            population = sorted(population, key=lambda x: x.fitness, reverse=True)
             best = population[0]
 
             if best_global is None or best.fitness > best_global.fitness:
