@@ -3,14 +3,14 @@ from src.utils.config import Config
 
 def test_simple_call():
     print("\n=== Testing LLM Client ===")
-    print("Calling GROQ API...")
+    print("Calling OPENAI API...")
     response = llm_client.chat(
         model=Config.REGIONAL_MODEL,
         system="You are a helpful assistant.",
-        user_message="Say 'Hello from GROQ!' and nothing else."
+        user_message="Say 'HEllo from Llama! and nothing else."
     )
     print(f"Response: {response}")
-    assert "Hello" in response or "hello" in response
+    assert "hello" in response.lower()
     print("✓ LLM client working!")
 
 def test_cache():

@@ -2,33 +2,33 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
 
 class Config:
     PROJECT_ROOT = Path(__file__).parent.parent.parent
+    load_dotenv(PROJECT_ROOT / ".env")
     DATA_DIR = PROJECT_ROOT / "data"
     LOGS_DIR = PROJECT_ROOT/ "logs"
     
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    ORCHESTRATOR_MODEL = os.getenv("ORCHESTRATOR_MODEL","llama-3.3-70b-versatile" )
-    REGIONAL_MODEL = os.getenv("REGIONAL_MODEL", "llama-3.3-70b-versatile")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    ORCHESTRATOR_MODEL = os.getenv("ORCHESTRATOR_MODEL","openai/gpt-oss-120b" )
+    REGIONAL_MODEL = os.getenv("REGIONAL_MODEL", "meta-llama/llama-3.1-8b-instruct")
     
-    GA_POPULATION_SIZE = int(os.getenv("GA_POPULATION_SIZE", "20"))
-    GA_GENERATIONS = int(os.getenv("GA_GENERATIONS", "50"))
-    MILP_TIME_LIMIT = int(os.getenv("MILP_TIME_LIMIT", "60"))
+    GA_POPULATION_SIZE = int(os.getenv("GA_POPULATION_SIZE", "80"))
+    GA_GENERATIONS = int(os.getenv("GA_GENERATIONS", "120"))
+    MILP_TIME_LIMIT = int(os.getenv("MILP_TIME_LIMIT", "120"))
     
     @classmethod
     def validate(cls):
 
-        if not cls.GROQ_API_KEY:
+        if not cls.OPENROUTER_API_KEY:
             raise ValueError(
-                "GROQ_API_KEY not found!\n"
+                "OPENROUTER_API_KEY not found!\n"
                 "Please set it in your .env file"
             )
 
-        if not cls.GROQ_API_KEY.startswith("gsk_"):
+        if not cls.OPENROUTER_API_KEY.startswith("sk-or-"):
             raise ValueError(
-                "Invalid GROQ API key format"
+                "Invalid OPENROUTER_API_KEY format"
             )
 
         cls.DATA_DIR.mkdir(exist_ok=True)

@@ -13,7 +13,7 @@ class Port:
 class Service:
     id:int
     ports: List[int]
-    capicity:int
+    capacity:int
     weekly_cost: float
     cycle_time : int
     

@@ -1,10 +1,13 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.utils.config import Config
 from src.utils.logger import logger
 
 def test_config ():
     """Test configuration loads correctly"""
     print("\n=== Testing Configuration ===")
-    print(f"API Key present: {'Yes' if Config.GROQ_API_KEY else 'No'}")
+    print(f"API Key present: {'Yes' if Config.OPENROUTER_API_KEY else 'No'}")
     print(f"Orchestrator model: {Config.ORCHESTRATOR_MODEL}")
     print(f"Regional model: {Config.REGIONAL_MODEL}")
     print(f"GA Population: {Config.GA_POPULATION_SIZE}")

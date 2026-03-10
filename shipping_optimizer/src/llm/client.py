@@ -1,11 +1,14 @@
-from groq import Groq
+from openai import OpenAI
 from src.utils.logger import logger
 from src.utils.config import Config
 
 class LLMClient:
     
     def __init__(self):
-        self.client = Groq(api_key = Config.GROQ_API_KEY)
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=Config.OPENROUTER_API_KEY
+        )
         self.cache = {}
         
         self.total_calls = 0
