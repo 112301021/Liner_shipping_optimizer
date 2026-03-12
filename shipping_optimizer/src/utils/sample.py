@@ -25,7 +25,7 @@ def load_real_dataset():
     for i, row in ports_df.iterrows():
 
         port = Port(
-            id=i,
+            id=row["UNLocode"],
             name=row["name"],
             latitude=row["Latitude"],
             longitude=row["Longitude"],
