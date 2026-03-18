@@ -41,7 +41,7 @@ class RegionalSplitter:
 
         for s in self.problem.services:
 
-            if any(p in port_set for p in s.ports):
+            if all(p in port_set for p in s.ports):
 
                 services.append(deepcopy(s))
 
