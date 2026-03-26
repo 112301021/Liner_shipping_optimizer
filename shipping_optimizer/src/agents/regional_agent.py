@@ -1,5 +1,6 @@
 from typing import Dict, Any
 import time
+from src.llm.evaluator import LLMEvaluator
 from src.agents.base import BaseAgent
 from src.agents.service_generator_agent import ServiceGeneratorAgent
 
@@ -23,6 +24,7 @@ class RegionalAgent(BaseAgent):
         )
 
         self.region = region
+        self.evaluator = LLMEvaluator()
 
 
     # ------------------------------------------------
@@ -81,33 +83,60 @@ Focus on hub-and-spoke network design and efficient vessel utilization.
         problem: Problem = input_data["problem"]
 
         total_demand = sum(d.weekly_teu for d in problem.demands)
+        
+        top_demands = sorted(
+            problem.demands,
+            key=lambda d: d.weekly_teu,
+            reverse=True
+        )[:5]
+
+        demand_info = [
+            (d.origin, d.destination, d.weekly_teu)
+            for d in top_demands
+        ]
 
         # ---------------------------------------
         # Step 1: LLM strategy
         # ---------------------------------------
 
         strategy_prompt = f"""
-Regional optimization problem.
+You are a shipping optimization expert.
 
 Region: {self.region}
 
-Ports: {len(problem.ports)}
-Demand lanes: {len(problem.demands)}
-Total weekly demand: {total_demand:,.0f} TEU
+Data:
+- Ports: {len(problem.ports)}
+- Demand lanes: {len(problem.demands)}
+- Total demand: {total_demand:,.0f} TEU
 
-Which network strategy should we prioritize?
+Top demand corridors:
+{demand_info}
 
-a) hub-and-spoke
-b) direct services
-c) hybrid network
+Task:
+Select best strategy.
+
+Options:
+A) Hub-and-spoke
+B) Direct
+C) Hybrid
+
+STRICT OUTPUT FORMAT:
+Strategy: <A/B/C>
+Reason 1: ...
+Reason 2: ...
 """
-
         try:
-            strategy = self.call_llm(strategy_prompt, temperature=0.6)
+            strategy = self.call_llm(strategy_prompt, temperature=0.2)
+            scores = self.evaluator.evaluate(strategy)
+            logger.info("llm_quality_strategy", scores=scores)
+
+            #  relaxed threshold + preserve output
+            if scores["total_score"] < 0.3:
+                strategy += "\n(Note: simplified strategy)"
         except Exception:
             strategy = "Hybrid hub-and-spoke network recommended."
 
-        logger.info("regional_strategy_generated")
+        logger.info("regional_strategy_generated", strategy=strategy[:100])
 
 
         # ---------------------------------------
@@ -152,8 +181,6 @@ c) hybrid network
 
         problem.services = normalized_services
 
-       
-        problem.services = normalized_services
 
         # ---------------------------------------
         # Remove economically unprofitable services
@@ -271,18 +298,46 @@ c) hybrid network
         # Step 4: LLM explanation
         # ---------------------------------------
 
-        explanation_prompt = f"""
-Optimization results for {self.region} region.
+        explanation_prompt = explanation_prompt = f"""
+You are a maritime logistics expert.
 
-Services deployed: {services_selected}
-Weekly profit: ${profit:,.0f}
-Demand coverage: {coverage:.1f}%
+Region: {self.region}
 
-Explain whether this is a good shipping network solution in 2 sentences.
+Chosen strategy:
+{strategy}
+
+Results:
+- Services deployed: {services_selected}
+- Weekly profit: ${profit:,.0f}
+- Demand coverage: {coverage:.1f}%
+
+Top demand corridors:
+{demand_info}
+
+Task:
+Evaluate the quality of THIS strategy and solution.
+
+STRICT RULE:
+- DO NOT change the strategy
+- DO NOT suggest a different strategy
+
+Output format:
+Verdict: <Good / Moderate / Poor>
+Strengths:
+- ...
+Weakness:
+- ...
+Improvement:
+- ...
 """
 
         try:
-            explanation = self.call_llm(explanation_prompt, temperature=0.6)
+            explanation = self.call_llm(explanation_prompt, temperature=0.2)
+            scores = self.evaluator.evaluate(explanation)
+            logger.info("llm_quality_explanation", scores=scores)
+
+            if scores["total_score"] < 0.3:
+                explanation += "\n(Note: simplified explanation)"
         except Exception:
             explanation = "Optimization produced a profitable hub-based shipping network."
 

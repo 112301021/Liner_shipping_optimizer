@@ -9,9 +9,9 @@ class Config:
     DATA_DIR = PROJECT_ROOT / "data"
     LOGS_DIR = PROJECT_ROOT/ "logs"
     
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    ORCHESTRATOR_MODEL = os.getenv("ORCHESTRATOR_MODEL","openai/gpt-oss-120b" )
-    REGIONAL_MODEL = os.getenv("REGIONAL_MODEL", "meta-llama/llama-3.1-8b-instruct")
+    OPENROUTER_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    ORCHESTRATOR_MODEL = os.getenv("ORCHESTRATOR_MODEL","claude-3-5-sonnet-20241022" )
+    REGIONAL_MODEL = os.getenv("REGIONAL_MODEL", "claude-3-5-sonnet-20241022")
     
     GA_POPULATION_SIZE = int(os.getenv("GA_POPULATION_SIZE", "80"))
     GA_GENERATIONS = int(os.getenv("GA_GENERATIONS", "120"))
@@ -22,7 +22,7 @@ class Config:
 
         if not cls.OPENROUTER_API_KEY:
             raise ValueError(
-                "OPENROUTER_API_KEY not found!\n"
+                "ANTHROPIC_API_KEY not found!\n"
                 "Please set it in your .env file"
             )
 

@@ -40,12 +40,13 @@ class HubDetector:
 
         hub_scores = {}
 
-        for port in range(len(self.problem.ports)):
+        for p in self.problem.ports:
+            pid = p.id
 
-            demand = demand_scores.get(port, 0)
-            conn = conn_scores.get(port, 0)
+            demand = demand_scores.get(pid, 0)
+            conn = conn_scores.get(pid, 0)
 
-            hub_scores[port] = demand * 0.7 + conn * 0.3
+            hub_scores[pid] = demand * 0.7 + conn * 0.3
 
         hubs = sorted(
             hub_scores,

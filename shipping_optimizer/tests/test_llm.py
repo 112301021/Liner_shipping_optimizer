@@ -7,7 +7,7 @@ def test_simple_call():
     response = llm_client.chat(
         model=Config.REGIONAL_MODEL,
         system="You are a helpful assistant.",
-        user_message="Say 'HEllo from Llama! and nothing else."
+        user_message="Say exactly: Hello from Llama!"
     )
     print(f"Response: {response}")
     assert "hello" in response.lower()

@@ -6,7 +6,6 @@ class PortClustering:
 
     def __init__(self, n_clusters=None, random_state=42):
 
-        # if user provides clusters (tests), use it
         self.n_clusters = n_clusters
         self.random_state = random_state
 

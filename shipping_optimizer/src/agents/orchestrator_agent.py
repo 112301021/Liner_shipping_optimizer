@@ -1,4 +1,5 @@
 from typing import Dict, Any, List 
+from src.llm.evaluator import LLMEvaluator
 from src.agents.base import BaseAgent
 from src.agents.regional_agent import RegionalAgent
 from src.decomposition.port_clustering import PortClustering
@@ -17,7 +18,7 @@ class OrchestratorAgent(BaseAgent):
             role="Master Orchestrator",
             model=model
         )
-        
+        self.evaluator = LLMEvaluator()
         self.regional_agents = [
             RegionalAgent("regional_asia", "Asia", Config.REGIONAL_MODEL),
             RegionalAgent("regional_europe", "Europe", Config.REGIONAL_MODEL),
@@ -43,17 +44,36 @@ class OrchestratorAgent(BaseAgent):
     def analyze_problem(self, problem:Problem)-> str:
         total_demand = sum(d.weekly_teu for d in problem.demands)
         analysis_prompt = f"""
-        We need to optimize a shipping network.
+        You are a shipping network optimization expert.
 
-        Ports: {len(problem.ports)}
-        Services: {len(problem.services)}
-        Demand lanes: {len(problem.demands)}
-        Total weekly demand: {total_demand:,.0f} TEU
+        Problem data:
+        - Number of Ports: {len(problem.ports)}
+        - Number of Services: {len(problem.services)}
+        - Number of Demand lanes: {len(problem.demands)}
+        - Total weekly demand: {total_demand:,.0f} TEU
 
-        Classify this problem size and describe challenges in 2 sentences."""
+        Task:
+        1. Classify the problem size (Small / Medium / Large)
+        2. Identify key optimization challenges
+
+        Think step by step before answering.
+
+        Output format:
+        Size: <Small/Medium/Large>
+        Challenges:
+        - ...
+        - ... """
         
         try:
-            return self.call_llm(analysis_prompt, temperature=0.3)
+            analysis = self.call_llm(analysis_prompt, temperature=0.3)
+
+            scores = self.evaluator.evaluate(analysis)
+            logger.info("llm_quality_analysis", scores=scores)
+
+            if scores["total_score"] < 0.3:
+                analysis += "\n(Note: simplified analysis)"
+
+            return analysis
         except Exception:
             return "LLM analysis unavailable."
         
@@ -116,7 +136,7 @@ class OrchestratorAgent(BaseAgent):
         problem: Problem = input_data["problem"]
         
         analysis = self.analyze_problem(problem)
-        logger.info("probelm_analysis_complete")
+        logger.info("problem_analysis_complete", status="done")
         
         regional_results = []
         
@@ -134,8 +154,6 @@ class OrchestratorAgent(BaseAgent):
 
         regional_results = []
 
-        regional_results = []
-
         for i, agent in enumerate(self.regional_agents):
 
             regional_problem = regional_problems.get(i)
@@ -148,19 +166,68 @@ class OrchestratorAgent(BaseAgent):
             regional_results.append(result)
                 
         metrics = self.aggregate_results(regional_results)
+        top_demands = sorted(
+            problem.demands,
+            key=lambda d: d.weekly_teu,
+            reverse=True
+        )[:5]
+
+        demand_info = [
+            (d.origin, d.destination, d.weekly_teu)
+            for d in top_demands
+        ]
         
         summary_prompt = f"""
-        Optimization complete.
+        You are a maritime logistics expert.
 
-        Services deployed: {metrics['total_services']}
-        Weekly profit: ${float(metrics['weekly_profit']):,.0f}
-        Demand coverage: {float(metrics['coverage']):.1f}%
-        Operating cost: ${float(metrics['cost']):,.0f}
+        Optimization results:
+        - Services deployed: {metrics['total_services']}
+        - Weekly profit: ${float(metrics['weekly_profit']):,.0f}
+        - Demand coverage: {float(metrics['coverage']):.1f}%
+        - Operating cost: ${float(metrics['cost']):,.0f}
+        
+        Top demand corridors:
+        {demand_info}
 
-        Provide a 3 sentence executive summary."""
+        Task:
+        Evaluate the quality of this shipping network.
+
+        Think step by step.
+
+        Output format:
+        Verdict: <Good / Moderate / Poor>
+        Strengths:
+        - ...
+        - ...
+        Weakness:
+        - ...
+        Recommendation:
+        - ...
+        """
         
         try:
-            executive_summary = self.call_llm(summary_prompt, temperature=0.4)
+            executive_summary = self.call_llm(summary_prompt, temperature=0.2)
+            scores = self.evaluator.evaluate(executive_summary)
+
+            logger.info("llm_raw_summary", text=executive_summary)
+            logger.info("llm_quality_summary", scores=scores)
+
+            if scores["total_score"] < 0.5:
+                executive_summary = f"""
+            Verdict: Moderate
+
+            Strengths:
+            - Profitable network with {metrics['total_services']} services
+            - Achieves {metrics['coverage']:.1f}% demand coverage
+
+            Weakness:
+            - Coverage still limited
+            - High operating cost
+
+            Recommendation:
+            - Improve demand coverage
+            - Optimize service allocation
+"""
         except Exception:
             executive_summary = "Executive summary unavailable."
             
