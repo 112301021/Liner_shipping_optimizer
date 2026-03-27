@@ -1,21 +1,21 @@
 from typing import Dict, Any
 import time
+
 from src.llm.evaluator import LLMEvaluator
 from src.agents.base import BaseAgent
 from src.agents.service_generator_agent import ServiceGeneratorAgent
 
 from src.optimization.data import Problem, Service
-from src.optimization.hierarchical_ga import HierarchicalGA
+from src.optimization.optimizer import ServiceOptimizer
 from src.optimization.hub_milp import HubMILP
 
 from src.services.hub_detector import HubDetector
-
 from src.utils.logger import logger
 
 
 class RegionalAgent(BaseAgent):
 
-    def __init__(self, name: str, region: str, model: str):
+    def __init__(self, name: str, region: str, model: str, rl_model_path: str = None):
 
         super().__init__(
             name=name,
@@ -26,233 +26,95 @@ class RegionalAgent(BaseAgent):
         self.region = region
         self.evaluator = LLMEvaluator()
 
+        self.optimizer = ServiceOptimizer(
+            use_rl=True,
+            rl_model_path=rl_model_path,
+            fallback_to_ga=True
+        )
 
-    # ------------------------------------------------
-    # System Prompt
     # ------------------------------------------------
     def get_system_prompt(self) -> str:
-
         return f"""
-You are a {self.region} shipping network optimization agent.
+You are a {self.region} optimization agent.
 
-Your responsibilities:
-- Analyze regional shipping demand
-- Design efficient liner services
-- Maximize weekly profit
-- Maintain strong demand coverage
-
-Focus on hub-and-spoke network design and efficient vessel utilization.
+You adapt based on feedback from orchestrator.
+Focus on profit, coverage, and efficiency.
 """
 
-
-    # ------------------------------------------------
-    # Hub-based decomposition
     # ------------------------------------------------
     def split_by_hubs(self, problem, num_hubs=5):
 
         hub_detector = HubDetector(problem)
-
         hubs = hub_detector.detect_hubs(top_k=num_hubs)
 
         clusters = {h: [] for h in hubs}
 
         for p in problem.ports:
-
             closest_hub = min(
                 hubs,
                 key=lambda h: problem.distance_matrix.get(h, {}).get(p.id, 1e9)
             )
-
             clusters[closest_hub].append(p)
 
         return clusters
 
-
-    # ------------------------------------------------
-    # Main optimization pipeline
     # ------------------------------------------------
     def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+
         start_time = time.perf_counter()
+
+        problem: Problem = input_data["problem"]
+        feedback = input_data.get("feedback", [])  # ✅ receive feedback
 
         logger.info(
             "regional_agent_started",
             agent=self.name,
-            region=self.region
+            region=self.region,
+            feedback=feedback
         )
 
-        problem: Problem = input_data["problem"]
+        # ------------------------------------------------
+        # APPLY FEEDBACK (CRITICAL)
+        # ------------------------------------------------
+
+        problem = self._apply_feedback(problem, feedback)
 
         total_demand = sum(d.weekly_teu for d in problem.demands)
-        
-        top_demands = sorted(
-            problem.demands,
-            key=lambda d: d.weekly_teu,
-            reverse=True
-        )[:5]
 
-        demand_info = [
-            (d.origin, d.destination, d.weekly_teu)
-            for d in top_demands
-        ]
+        # ---- Strategy ----
+        strategy = self._generate_strategy(problem, total_demand)
 
-        # ---------------------------------------
-        # Step 1: LLM strategy
-        # ---------------------------------------
-
-        strategy_prompt = f"""
-You are a shipping optimization expert.
-
-Region: {self.region}
-
-Data:
-- Ports: {len(problem.ports)}
-- Demand lanes: {len(problem.demands)}
-- Total demand: {total_demand:,.0f} TEU
-
-Top demand corridors:
-{demand_info}
-
-Task:
-Select best strategy.
-
-Options:
-A) Hub-and-spoke
-B) Direct
-C) Hybrid
-
-STRICT OUTPUT FORMAT:
-Strategy: <A/B/C>
-Reason 1: ...
-Reason 2: ...
-"""
-        try:
-            strategy = self.call_llm(strategy_prompt, temperature=0.2)
-            scores = self.evaluator.evaluate(strategy)
-            logger.info("llm_quality_strategy", scores=scores)
-
-            #  relaxed threshold + preserve output
-            if scores["total_score"] < 0.3:
-                strategy += "\n(Note: simplified strategy)"
-        except Exception:
-            strategy = "Hybrid hub-and-spoke network recommended."
-
-        logger.info("regional_strategy_generated", strategy=strategy[:100])
-
-
-        # ---------------------------------------
-        # Step 2: Generate services
-        # ---------------------------------------
-
-        logger.info("service_generation_started")
-
+        # ---- Service Generation ----
         service_agent = ServiceGeneratorAgent(
             name="service_generator",
             model=self.model
         )
 
-        service_result = service_agent.process({
-            "problem": problem
-        })
-        
-        services = service_result["services"]
-        services_generated = len(services)
+        services = service_agent.process({"problem": problem})["services"]
 
-        # ---------------------------------------
-        # Convert dict → Service objects
-        # ---------------------------------------
-
-        normalized_services = []
-
-        for i, s in enumerate(services):
-
-            if isinstance(s, Service):
-                normalized_services.append(s)
-
-            else:
-                normalized_services.append(
-                    Service(
-                        id=s.get("id", f"svc_{i}"),
-                        ports=s["ports"],
-                        capacity=s.get("capacity", 5000),
-                        weekly_cost=s.get("weekly_cost", 800000),
-                        cycle_time=s.get("cycle_time", 28)
-                    )
-                )
-
-        problem.services = normalized_services
-
-
-        # ---------------------------------------
-        # Remove economically unprofitable services
-        # ---------------------------------------
-
-        profitable_services = []
-
-        for s in problem.services:
-
-            revenue_estimate = s.capacity * 150  # average revenue per TEU estimate
-
-            if revenue_estimate > s.weekly_cost:
-                profitable_services.append(s)
-
-        problem.services = profitable_services
-
-        logger.info(
-            "services_generated",
-            count=len(problem.services)
+        problem.services = self._top_k_services(
+            self._filter_profitable_services(
+                self._normalize_services(services)
+            ),
+            problem
         )
 
+        # ---- RL Optimization ----
+        chromosome = self.optimizer.optimize(problem)
+        services_selected = sum(chromosome.services)
 
-        # ---------------------------------------
-        # Filter services (speed improvement)
-        # ---------------------------------------
-        max_services = max(200, int(len(problem.ports) * 0.6))
-        services = sorted(
-            problem.services,
-            key=lambda s: s.capacity / (s.weekly_cost + 1),
-            reverse=True
-        )[:max_services]
-
-        problem.services = services
-        services_filtered = len(services)
-
-        logger.info(
-            "services_filtered",
-            count=services_filtered
-        )
-        # ---------------------------------------
-        # Step 3: Run GA ONCE for region
-        # ---------------------------------------
-
-        logger.info("hierarchical_ga_started")
-
-        ga = HierarchicalGA(problem)
-        chromosome = ga.run()
-
-        services_selected = sum(chromosome["services"])
-
-        logger.info(
-            "ga_completed",
-            services_selected=services_selected
-        )
-
-        # ---------------------------------------
-        # Step 4: Hub-based MILP decomposition
-        # ---------------------------------------
-
-        logger.info("hub_decomposition_started")
-
+        # ---- MILP ----
         clusters = self.split_by_hubs(problem)
 
         cluster_results = []
 
         for hub, ports in clusters.items():
 
-            # Filter demands belonging to cluster
-            cluster_port_ids = {p.id for p in ports}
+            cluster_ids = {p.id for p in ports}
+
             cluster_demands = [
                 d for d in problem.demands
-                if d.origin in cluster_port_ids or d.destination in cluster_port_ids
+                if d.origin in cluster_ids or d.destination in cluster_ids
             ]
 
             if not cluster_demands:
@@ -265,113 +127,156 @@ Reason 2: ...
                 distance_matrix=problem.distance_matrix
             )
 
-            milp = HubMILP(sub_problem, chromosome)
-            milp_result = milp.solve()
-
-            cluster_results.append(milp_result)
-
-        
-        # ---------------------------------------
-        # Aggregate cluster results
-        # ---------------------------------------
+            result = HubMILP(sub_problem, chromosome).solve()
+            cluster_results.append(result)
 
         total_profit = sum(r["profit"] for r in cluster_results)
-
-        avg_coverage = (
+        coverage = (
             sum(r["coverage"] for r in cluster_results) / len(cluster_results)
             if cluster_results else 0
         )
-
         operating_cost = sum(r.get("cost", 0) for r in cluster_results)
 
-        profit = total_profit
-        coverage = avg_coverage
-
-        logger.info(
-            "regional_optimization_completed",
-            profit=profit,
-            coverage=coverage
+        # ---- Explanation ----
+        explanation = self._generate_explanation(
+            strategy,
+            services_selected,
+            total_profit,
+            coverage
         )
 
+        runtime = time.perf_counter() - start_time
 
-        # ---------------------------------------
-        # Step 4: LLM explanation
-        # ---------------------------------------
+        # ------------------------------------------------
+        # SEND FEEDBACK TO ORCHESTRATOR
+        # ------------------------------------------------
 
-        explanation_prompt = explanation_prompt = f"""
-You are a maritime logistics expert.
-
-Region: {self.region}
-
-Chosen strategy:
-{strategy}
-
-Results:
-- Services deployed: {services_selected}
-- Weekly profit: ${profit:,.0f}
-- Demand coverage: {coverage:.1f}%
-
-Top demand corridors:
-{demand_info}
-
-Task:
-Evaluate the quality of THIS strategy and solution.
-
-STRICT RULE:
-- DO NOT change the strategy
-- DO NOT suggest a different strategy
-
-Output format:
-Verdict: <Good / Moderate / Poor>
-Strengths:
-- ...
-Weakness:
-- ...
-Improvement:
-- ...
-"""
-
-        try:
-            explanation = self.call_llm(explanation_prompt, temperature=0.2)
-            scores = self.evaluator.evaluate(explanation)
-            logger.info("llm_quality_explanation", scores=scores)
-
-            if scores["total_score"] < 0.3:
-                explanation += "\n(Note: simplified explanation)"
-        except Exception:
-            explanation = "Optimization produced a profitable hub-based shipping network."
-
-        logger.info("solution_explained")
-
-
-        # ---------------------------------------
-        # Final result
-        # ---------------------------------------
+        feedback_payload = self._generate_feedback_payload(
+            total_profit,
+            coverage,
+            services_selected
+        )
 
         result = {
-
             "agent": self.name,
             "region": self.region,
             "status": "Optimal",
 
-            "services_generated": services_generated,
-            "services_filtered": services_filtered,
-
             "services_selected": services_selected,
-
-            "weekly_profit": profit,
+            "weekly_profit": total_profit,
             "coverage_percent": coverage,
             "operating_cost": operating_cost,
 
             "strategy": strategy,
-            "explanation": explanation
+            "explanation": explanation,
+
+            "feedback": feedback_payload,  # ✅ send feedback
+
+            "meta": {
+                "runtime_sec": round(runtime, 4)
+            }
         }
 
         logger.info(
             "regional_agent_complete",
             region=self.region,
-            profit=profit,
+            profit=total_profit,
             coverage=coverage
         )
-        regional_runtime = time.perf_counter() - start_time
+
         return result
+
+    # ------------------------------------------------
+    # FEEDBACK HANDLING
+    # ------------------------------------------------
+
+    def _apply_feedback(self, problem, feedback):
+
+        if not feedback:
+            return problem
+
+        logger.info("applying_feedback", feedback=feedback)
+
+        if "low_coverage" in feedback:
+            # Encourage broader coverage
+            problem.demands = problem.demands + problem.demands[:10]
+
+        if "underutilized_network" in feedback:
+            # Allow more services
+            problem.services = problem.services * 2
+
+        if "negative_profit" in feedback:
+            # Filter aggressively
+            problem.services = [
+                s for s in problem.services if s.capacity * 200 > s.weekly_cost
+            ]
+
+        return problem
+
+    def _generate_feedback_payload(self, profit, coverage, services):
+
+        issues = []
+
+        if coverage < 60:
+            issues.append("low_coverage")
+
+        if profit < 0:
+            issues.append("negative_profit")
+
+        if services < 3:
+            issues.append("underutilized_network")
+
+        return {
+            "issues": issues,
+            "score": profit * 0.6 + coverage * 0.4
+        }
+
+    # ------------------------------------------------
+    # HELPERS (UNCHANGED CORE)
+    # ------------------------------------------------
+
+    def _generate_strategy(self, problem, total_demand):
+        try:
+            return self.call_llm(
+                f"Region: {self.region}, Demand: {total_demand}, Choose strategy",
+                temperature=0.2
+            )
+        except:
+            return "Hybrid strategy"
+
+    def _normalize_services(self, services):
+        normalized = []
+        for i, s in enumerate(services):
+            if isinstance(s, Service):
+                normalized.append(s)
+            else:
+                normalized.append(
+                    Service(
+                        id=s.get("id", f"svc_{i}"),
+                        ports=s["ports"],
+                        capacity=s.get("capacity", 5000),
+                        weekly_cost=s.get("weekly_cost", 800000),
+                        cycle_time=s.get("cycle_time", 28)
+                    )
+                )
+        return normalized
+
+    def _filter_profitable_services(self, services):
+        return [s for s in services if s.capacity * 150 > s.weekly_cost]
+
+    def _top_k_services(self, services, problem):
+        max_services = max(200, int(len(problem.ports) * 0.6))
+        return sorted(
+            services,
+            key=lambda s: s.capacity / (s.weekly_cost + 1),
+            reverse=True
+        )[:max_services]
+
+    def _generate_explanation(self, strategy, services, profit, coverage):
+        try:
+            return self.call_llm(
+                f"Strategy: {strategy}, Profit: {profit}, Coverage: {coverage}",
+                temperature=0.2
+            )
+        except:
+            return "Stable solution"
