@@ -1,11 +1,11 @@
 from typing import Dict, Any, List
 import time
 
-from src.llm.evaluator import LLMEvaluator
 from src.agents.base import BaseAgent
 from src.agents.regional_agent import RegionalAgent
 from src.decomposition.port_clustering import PortClustering
 from src.decomposition.regional_splitter import RegionalSplitter
+from src.feedback.feedback_manager import FeedbackManager
 from src.optimization.data import Problem
 from src.utils.config import Config
 from src.utils.logger import logger
@@ -23,8 +23,7 @@ class OrchestratorAgent(BaseAgent):
             role="Master Orchestrator",
             model=model
         )
-
-        self.evaluator = LLMEvaluator()
+        self.feedback_manager = FeedbackManager()
 
         # RL-enabled regional agents
         self.regional_agents = [
@@ -196,7 +195,36 @@ Classify problem + challenges.
         regional_results = self._resolution_loop(regional_problems)
 
         # ---- Step 4: Feedback Aggregation ----
-        feedback = self._evaluate_and_feedback(regional_results)
+        feedback_data = self.feedback_manager.collect(regional_results)
+
+        issues = self.feedback_manager.analyze(feedback_data)
+
+        # -----------------------------
+        # STEP: Resolution Loop (if needed)
+        # -----------------------------
+        if self.feedback_manager.should_trigger_resolution(issues):
+
+            payload = self.feedback_manager.build_resolution_payload(issues)
+
+            logger.info("resolution_triggered", issues=payload)
+
+            updated_results = []
+
+            for idx, agent in enumerate(self.regional_agents):
+
+                regional_problem = regional_problems.get(idx)
+
+                if regional_problem is None:
+                    continue
+
+                result = agent.process({
+                    "problem": regional_problem,
+                    "feedback": payload   # ✅ SEND FEEDBACK
+                })
+
+                updated_results.append(result)
+
+            regional_results = updated_results
 
         # ---- Step 5: Metrics ----
         metrics = self.aggregate_results(regional_results)
@@ -218,7 +246,7 @@ Classify problem + challenges.
 
             "problem_analysis": analysis,
             "regional_results": regional_results,
-            "feedback": feedback,
+            "feedback": feedback_data,
 
             "summary_metrics": metrics,
             "executive_summary": summary,
