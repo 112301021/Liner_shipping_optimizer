@@ -71,4 +71,4 @@ class HubDetector:
                 "lon": p.longitude
             })
 
-        return summary
+        return summary 

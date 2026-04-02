@@ -12,7 +12,7 @@ from src.data.network_loader import NetworkLoader
 from src.services.candidate_service_generator import CandidateServiceGenerator
 from src.optimization.service_ga import ServiceGA
 from src.optimization.frequency_ga import FrequencyGA
-from src.optimization.fallback_ga import HierarchicalGA
+from src.optimization.hierarchical_ga import HierarchicalGA
 from src.optimization.data import Problem
 from src.optimization.data import Service
 

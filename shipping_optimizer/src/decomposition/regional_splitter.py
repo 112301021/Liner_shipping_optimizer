@@ -69,4 +69,4 @@ class RegionalSplitter:
 
             regional_problems[cluster_id] = self.build_region(port_ids)
 
-        return regional_problems
+        return regional_problems 
