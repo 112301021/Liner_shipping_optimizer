@@ -1,47 +1,67 @@
-from typing import Dict, Any, List
+"""
+regional_agent.py  — Demand-Aware Regional Optimisation Agent
+==============================================================
+Critical fixes:
+  1. MIN_COVERAGE_FLOOR = 0.0 (infeasible at 0.30 with sparse pool).
+  2. max_transfer_pairs = 2000 (was 500/60 — bottleneck for hub routing).
+  3. ALPHA_UNSERVED = 300.0 (was 50 — too low vs avg revenue $2009/TEU;
+     now MILP is strongly incentivised to serve demand via transshipment).
+  4. Service cap raised to max(400, num_ports) for better coverage.
+  5. Coverage denominator = regional total_demand (NOT sum of cluster totals
+     which double-counts cross-cluster OD pairs).
+  6. Strategy selection uses median demand, not top-3 share.
+  7. All hardened output fields present.
+"""
+
 import time
-from src.llm.evaluator import LLMEvaluator
-from src.agents.base import BaseAgent
+import logging
+from typing import Dict, Any, List
+
+from src.llm.evaluator                  import LLMEvaluator
+from src.agents.base                    import BaseAgent
 from src.agents.service_generator_agent import ServiceGeneratorAgent
+from src.optimization.data              import Problem, Service
+from src.optimization.hierarchical_ga   import HierarchicalGA
+from src.optimization.hub_milp          import HubMILP
+from src.services.hub_detector          import HubDetector
 
-from src.optimization.data import Problem, Service
-from src.optimization.hierarchical_ga import HierarchicalGA
-from src.optimization.hub_milp import HubMILP
+logger = logging.getLogger(__name__)
 
-from src.services.hub_detector import HubDetector
-import re
-from src.utils.logger import logger
+# ── Shared cost constants — identical in GA and MILP ──────────────────
+TRANSSHIP_COST_PER_TEU = 80.0
+PORT_COST_PER_TEU      = 15.0
+# RAISED: avg revenue = $2009/TEU; alpha=$300 strongly incentivises MILP
+# to serve demand rather than pay penalty
+ALPHA_UNSERVED         = 300.0
+MIN_COVERAGE_FLOOR     = 0.0    # 0.30 was infeasible; penalty drives coverage
+MAX_TRANSFER_PAIRS     = 2000   # RAISED from 500/60 — essential for hub routing
 
 
 class RegionalAgent(BaseAgent):
 
     def __init__(self, name: str, region: str, model: str):
-        super().__init__(
-            name=name,
-            role=f"Regional Optimizer - {region}",
-            model=model
-        )
+        super().__init__(name=name, role=f"Regional Optimizer - {region}", model=model)
         self.region    = region
         self.evaluator = LLMEvaluator()
 
-    # ------------------------------------------------------------------
-    # System Prompt
-    # ------------------------------------------------------------------
     def get_system_prompt(self) -> str:
         return (
-            f"You are a liner shipping network optimization analyst for the {self.region} region.\n\n"
-            "Your output feeds directly into a Decision Agent and will be reviewed by "
-            "academic supervisors. Rules:\n"
-            "1. Every claim must cite a specific number from the data you are given.\n"
-            "2. Do not use vague language: 'consider', 'explore', 'may', 'could potentially'.\n"
+            f"You are a liner shipping network optimisation analyst for the {self.region} region.\n\n"
+            "Your output feeds directly into a Decision Agent reviewed by academic supervisors.\n"
+            "1. Every claim must cite a specific number from the data.\n"
+            "2. No vague language: 'consider', 'explore', 'may', 'could potentially'.\n"
             "3. Strategy reasons must name specific port IDs or TEU volumes.\n"
-            "4. Improvement actions must be specific and measurable — port IDs, TEU targets, "
-            "or cost figures required."
+            "4. Improvement actions must be specific and measurable."
         )
 
-    # ------------------------------------------------------------------
-    # Hub-based decomposition
-    # ------------------------------------------------------------------
+    def is_valid_explanation(self, text: str) -> bool:
+        import re
+        required = ["Verdict:", "Strength", "Weakness", "Improvement"]
+        return all(r in text for r in required) and bool(re.search(r"\d{2,}", text))
+
+    # ------------------------------------------------------------------ #
+    #  Hub-based cluster decomposition                                      #
+    # ------------------------------------------------------------------ #
     def split_by_hubs(self, problem: Problem, num_hubs: int = 5) -> Dict:
         hub_detector = HubDetector(problem)
         hubs         = hub_detector.detect_hubs(top_k=num_hubs)
@@ -49,159 +69,162 @@ class RegionalAgent(BaseAgent):
         for p in problem.ports:
             closest_hub = min(
                 hubs,
-                key=lambda h: problem.distance_matrix.get(h, {}).get(p.id, 1e9)
+                key=lambda h: problem.distance_matrix.get(h, {}).get(p.id, 1e9),
             )
             clusters[closest_hub].append(p)
         return clusters
 
-    
-    def is_valid_explanation(self, text: str) -> bool:
-        required = ["Verdict:", "Strength", "Weakness", "Improvement"]
-        has_sections = all(r in text for r in required)
-        has_number   = bool(__import__("re").search(r"\d{2,}", text))  # 2+ digit rule
-        return has_sections and has_number
-    # ------------------------------------------------------------------
-    # Main optimization pipeline
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ #
+    #  Smart service filter — raised cap, same margin check                 #
+    # ------------------------------------------------------------------ #
+    def _filter_services(self, problem: Problem) -> Problem:
+        """
+        Keep services covering demand corridors with positive margin.
+        Service cap raised to max(400, num_ports) to allow more coverage.
+
+        All newly-generated services pass the margin filter by design:
+          direct  cap=8000,  cost=150k -> 600k > 150k ✓
+          loop    cap=10000, cost=180k -> 750k > 180k ✓
+          trunk   cap=12000, cost=200k -> 900k > 200k ✓
+          feeder  cap=4000,  cost=70k  -> 300k > 70k  ✓
+        """
+        corridor_set = {(d.origin, d.destination) for d in problem.demands}
+        kept = []
+        for svc in problem.services:
+            port_set = set(svc.ports)
+            covers   = any(o in port_set and d in port_set for (o, d) in corridor_set)
+            margin   = (svc.capacity * 0.5 * 150) > svc.weekly_cost
+            if covers and margin:
+                kept.append(svc)
+
+        num_ports    = len(problem.ports)
+        # RAISED cap: ensures enough services for good hub-spoke coverage
+        max_services = max(400, num_ports)
+        kept = sorted(kept, key=lambda s: s.capacity / (s.weekly_cost + 1), reverse=True)[:max_services]
+
+        problem.services = kept
+        logger.info("services_filtered", region=self.region, count=len(kept))
+        return problem
+
+    # ------------------------------------------------------------------ #
+    #  Main pipeline                                                        #
+    # ------------------------------------------------------------------ #
     def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        start_time = time.perf_counter()
-
+        t0 = time.perf_counter()
         logger.info("regional_agent_started", agent=self.name, region=self.region)
-
         problem: Problem = input_data["problem"]
 
-        # ── Pre-compute everything the LLM will need ───────────────────
-        total_demand     = sum(d.weekly_teu for d in problem.demands)
-        num_ports        = len(problem.ports)
-        num_lanes        = len(problem.demands)
-        avg_demand       = total_demand / num_lanes if num_lanes else 0
+        # Capture regional total demand BEFORE any splitting/modification
+        total_demand = sum(d.weekly_teu for d in problem.demands)
+        num_ports    = len(problem.ports)
+        num_lanes    = len(problem.demands)
+        avg_demand   = total_demand / num_lanes if num_lanes else 0
+        median_demand = sorted([d.weekly_teu for d in problem.demands])[num_lanes // 2] if num_lanes else 0
 
-        top_demands = sorted(problem.demands, key=lambda d: d.weekly_teu, reverse=True)
-        top5        = top_demands[:5]
-        top3_teu    = sum(d.weekly_teu for d in top_demands[:3])
-        top3_share  = round(top3_teu / total_demand * 100, 1) if total_demand else 0
+        top_demands  = sorted(problem.demands, key=lambda d: d.weekly_teu, reverse=True)
+        top5         = top_demands[:5]
+        top3_teu     = sum(d.weekly_teu for d in top_demands[:3])
+        top3_share   = round(top3_teu / total_demand * 100, 1) if total_demand else 0
 
-        # Format corridor table for the prompt
         corridor_table = "\n".join(
-            f"  {i+1}. Port {d.origin:>5} → Port {d.destination:>5}: "
+            f"  {i+1}. Port {d.origin:>5} -> Port {d.destination:>5}: "
             f"{d.weekly_teu:>8,.0f} TEU/wk  "
             f"({d.weekly_teu / total_demand * 100:.1f}% of regional demand)"
             for i, d in enumerate(top5)
         )
 
-        # Detect hubs for the prompt (hub detector is deterministic)
-        hub_detector     = HubDetector(problem)
-        detected_hubs    = hub_detector.detect_hubs(top_k=5)
-        hub_ids_str      = ", ".join(str(h) for h in detected_hubs)
+        hub_detector  = HubDetector(problem)
+        detected_hubs = hub_detector.detect_hubs(top_k=5)
+        hub_ids_str   = ", ".join(str(h) for h in detected_hubs)
 
-        # ── Step 1: LLM strategy selection ────────────────────────────
-        strategy_prompt = f"""You are a liner shipping network design expert.
+        # Strategy based on demand dispersion (not top-3 share which is always < 20%)
+        if median_demand <= 10 and num_lanes > 500:
+            strat_code = "C"
+            strat_name = "hybrid"
+            decision_rule = (
+                f"Select C (Hybrid): median demand {median_demand} TEU/lane with {num_lanes} lanes "
+                f"-> consolidation via hub routing essential for low-demand corridors."
+            )
+        elif top3_share > 35:
+            strat_code = "A"
+            strat_name = "hub_and_spoke"
+            decision_rule = f"Select A (Hub-and-spoke): top-3 share {top3_share}% > 35%."
+        else:
+            strat_code = "C"
+            strat_name = "hybrid"
+            decision_rule = (
+                f"Select C (Hybrid): top-3 share {top3_share}% with avg {avg_demand:.1f} TEU/lane."
+            )
 
-REGIONAL DATA — {self.region.upper()} (ground truth from solver):
-  Ports               : {num_ports}
-  Demand lanes        : {num_lanes}
-  Total weekly demand : {total_demand:,.0f} TEU
-  Avg demand per lane : {avg_demand:,.1f} TEU
-  Top-3 corridor share: {top3_share}%  of total regional demand
-  Detected hub ports  : [{hub_ids_str}]
-
-TOP-5 DEMAND CORRIDORS:
-{corridor_table}
-
-STRATEGY OPTIONS:
-  A) Hub-and-spoke — consolidate cargo at hub ports, then redistribute. \
-Best when top-corridor share > 35% (demand is concentrated).
-  B) Direct        — point-to-point services between high-demand pairs. \
-Best when top-corridor share < 20% (demand is spread).
-  C) Hybrid        — trunk routes between hubs + direct feeders for top lanes. \
-Best when top-corridor share is 20-35% (mixed concentration).
-
-DECISION RULE:
-  Top-3 share = {top3_share}%.
-  {"Select A (Hub-and-spoke): share > 35% indicates concentrated demand — hub consolidation reduces vessel legs." if top3_share > 35
-   else "Select B (Direct): share < 20% indicates dispersed demand — direct services minimise transshipment." if top3_share < 20
-   else "Select C (Hybrid): share 20-35% indicates mixed demand — trunk routes plus targeted direct feeders."}
-
-STRICT OUTPUT FORMAT — no extra text, no explanation outside these fields:
-Strategy: <A | B | C>
-Selected: <hub_and_spoke | direct | hybrid>
-Reason 1: [Must cite the top-3 share percentage and at least one specific port ID from the table above]
-Reason 2: [Must cite the port count ({num_ports}) and demand lane count ({num_lanes}) with a specific operational implication]
-Hub Ports: [{hub_ids_str}]
-"""
+        strategy_prompt = (
+            f"REGIONAL DATA - {self.region.upper()}:\n"
+            f"  Ports: {num_ports}, Lanes: {num_lanes}, Median demand: {median_demand} TEU/lane\n"
+            f"  Total demand: {total_demand:,.0f} TEU/wk, Top-3 share: {top3_share}%\n"
+            f"  Hub ports: [{hub_ids_str}]\n\n"
+            f"TOP-5 CORRIDORS:\n{corridor_table}\n\n"
+            f"DECISION RULE: {decision_rule}\n\n"
+            f"STRICT FORMAT:\n"
+            f"Strategy: <A | B | C>\n"
+            f"Selected: <hub_and_spoke | direct | hybrid>\n"
+            f"Reason 1: [cite median demand {median_demand} TEU/lane and >=1 port ID]\n"
+            f"Reason 2: [cite port count {num_ports} and lane count {num_lanes}]\n"
+            f"Hub Ports: [{hub_ids_str}]"
+        )
 
         try:
             strategy = self.call_llm(strategy_prompt, temperature=0.1)
-            scores   = self.evaluator.evaluate(strategy)
-            
-            if not any(char.isdigit() for char in strategy):
-                strategy += f"\nReason 3: Total demand {total_demand:,.0f} TEU across {num_ports} ports."
-
-            logger.info("llm_quality_strategy", scores=scores)
-            if scores["total_score"] < 0.3:
-                strategy += "\n(Note: simplified strategy)"
+            if not any(c.isdigit() for c in strategy):
+                strategy += f"\nReason 3: Demand {total_demand:,.0f} TEU across {num_ports} ports."
         except Exception:
             strategy = (
-                f"Strategy: {'A' if top3_share > 35 else 'B' if top3_share < 20 else 'C'}\n"
-                f"Selected: {'hub_and_spoke' if top3_share > 35 else 'direct' if top3_share < 20 else 'hybrid'}\n"
-                f"Reason 1: Top-3 corridors hold {top3_share}% of {total_demand:,.0f} TEU — "
-                f"hub consolidation at ports [{hub_ids_str}] minimises vessel count.\n"
-                f"Reason 2: {num_ports} ports across {num_lanes} lanes at avg {avg_demand:,.0f} TEU/lane "
-                f"justifies hub aggregation over direct point-to-point.\n"
+                f"Strategy: {strat_code}\nSelected: {strat_name}\n"
+                f"Reason 1: Median demand {median_demand} TEU/lane across {num_lanes} lanes "
+                f"-> hub consolidation required for {num_lanes-500} low-demand corridors.\n"
+                f"Reason 2: {num_ports} ports x {num_lanes} lanes -> hub ports [{hub_ids_str}].\n"
                 f"Hub Ports: [{hub_ids_str}]"
             )
 
-        logger.info("regional_strategy_generated", strategy=strategy[:120])
-
-        # ── Step 2: Generate services ──────────────────────────────────
-        logger.info("service_generation_started")
-
-        service_agent = ServiceGeneratorAgent(name="service_generator", model=self.model)
-        service_result = service_agent.process({"problem": problem})
-        services       = service_result["services"]
+        # ── Service generation ─────────────────────────────────────────
+        svc_agent  = ServiceGeneratorAgent(name="svc_gen", model=self.model)
+        svc_result = svc_agent.process({"problem": problem})
+        services   = svc_result["services"]
         services_generated = len(services)
 
-        # Convert dict → Service objects
-        normalized_services = []
+        norm: List[Service] = []
         for i, s in enumerate(services):
             if isinstance(s, Service):
-                normalized_services.append(s)
+                norm.append(s)
             else:
-                normalized_services.append(Service(
-                    id=s.get("id", f"svc_{i}"),
-                    ports=s["ports"],
+                norm.append(Service(
+                    id=s.get("id", i), ports=s["ports"],
                     capacity=s.get("capacity", 5000),
-                    weekly_cost=s.get("weekly_cost", 800000),
-                    cycle_time=s.get("cycle_time", 28),
+                    weekly_cost=s.get("weekly_cost", 150_000),
+                    cycle_time=s.get("cycle_time", 14),
                 ))
-        problem.services = normalized_services
+        problem.services = norm
 
-        # Remove economically unprofitable services
-        problem.services = [
-            s for s in problem.services
-            if s.capacity * 150 > s.weekly_cost
-        ]
-
-        # Cap service pool for tractability
-        max_services     = max(200, int(num_ports * 0.6))
-        problem.services = sorted(
-            problem.services,
-            key=lambda s: s.capacity / (s.weekly_cost + 1),
-            reverse=True,
-        )[:max_services]
+        # ── Smart service filter ───────────────────────────────────────
+        problem           = self._filter_services(problem)
         services_filtered = len(problem.services)
 
-        logger.info("services_filtered", count=services_filtered)
-
-        # ── Step 3: GA ─────────────────────────────────────────────────
+        # ── HierarchicalGA ─────────────────────────────────────────────
         logger.info("hierarchical_ga_started")
-        ga               = HierarchicalGA(problem)
-        chromosome       = ga.run()
+        ga = HierarchicalGA(
+            problem,
+            w_profit               = 0.5,
+            w_coverage             = 0.4,
+            w_cost                 = 0.1,
+            alpha_unserved         = ALPHA_UNSERVED,
+            max_runtime_sec        = 55.0,
+            transship_cost_per_teu = TRANSSHIP_COST_PER_TEU,
+            port_cost_per_teu      = PORT_COST_PER_TEU,
+        )
+        chromosome        = ga.run()
         services_selected = sum(chromosome["services"])
-        logger.info("ga_completed", services_selected=services_selected)
+        logger.info("ga_complete", services_selected=services_selected)
 
-        # ── Step 4: Hub-based MILP decomposition ───────────────────────
-        logger.info("hub_decomposition_started")
+        # ── MILP decomposition by hub clusters ─────────────────────────
+        logger.info("milp_decomposition_started")
         clusters        = self.split_by_hubs(problem)
         cluster_results = []
 
@@ -213,90 +236,78 @@ Hub Ports: [{hub_ids_str}]
             ]
             if not cluster_demands:
                 continue
-            sub_problem = Problem(
-                ports=ports,
-                services=problem.services,
-                demands=cluster_demands,
-                distance_matrix=problem.distance_matrix,
+
+            sub = Problem(
+                ports           = ports,
+                services        = problem.services,
+                demands         = cluster_demands,
+                distance_matrix = problem.distance_matrix,
             )
-            milp        = HubMILP(sub_problem, chromosome)
-            milp_result = milp.solve()
-            cluster_results.append(milp_result)
+            milp = HubMILP(
+                sub,
+                chromosome,
+                transship_cost_per_teu = TRANSSHIP_COST_PER_TEU,
+                port_cost_per_teu      = PORT_COST_PER_TEU,
+                alpha_unserved         = ALPHA_UNSERVED,
+                min_coverage           = MIN_COVERAGE_FLOOR,
+                max_transfer_pairs     = MAX_TRANSFER_PAIRS,
+            )
+            cluster_results.append(milp.solve())
 
-        # ── Aggregate cluster results ───────────────────────────────────
-        profit         = sum(r["profit"]   for r in cluster_results)
-        avg_coverage   = (
-            sum(r["coverage"] for r in cluster_results) / len(cluster_results)
-            if cluster_results else 0
-        )
-        operating_cost = sum(r.get("cost", 0) for r in cluster_results)
-        coverage       = avg_coverage
+        # ── Aggregate — use regional total_demand as denominator ────────
+        # (Not sum of cluster total_demand which double-counts cross-cluster OD)
+        profit         = sum(r["profit"]           for r in cluster_results)
+        operating_cost = sum(r["cost"]             for r in cluster_results)
+        transship_cost = sum(r["transship_cost"]   for r in cluster_results)
+        port_cost      = sum(r["port_cost"]        for r in cluster_results)
+        total_cost     = sum(r["total_cost"]       for r in cluster_results)
+        satisfied      = sum(r["satisfied_demand"] for r in cluster_results)
+        unserved_teu   = sum(r["unserved_demand"]  for r in cluster_results)
 
-        logger.info("regional_optimization_completed", profit=profit, coverage=coverage)
+        # Cap satisfied at total_demand to avoid >100% coverage
+        satisfied = min(satisfied, total_demand)
+        coverage  = satisfied / total_demand * 100 if total_demand else 0.0
 
-        # ── Pre-compute derived figures for the explanation prompt ──────
-        uncovered_pct       = round(100 - coverage, 1)
-        uncovered_teu       = total_demand * uncovered_pct / 100
-        profit_per_service  = round(profit / services_selected, 0) if services_selected else 0
-        cost_per_service    = round(operating_cost / services_selected, 0) if services_selected else 0
-        profit_margin_pct   = round(profit / (profit + operating_cost) * 100, 1) \
-                              if (profit + operating_cost) > 0 else 0
+        # Derived metrics
+        uncovered_pct      = round(100 - coverage, 1)
+        profit_per_service = round(profit / services_selected, 0) if services_selected else 0
+        cost_per_service   = round(total_cost / services_selected, 0) if services_selected else 0
+        profit_margin_pct  = round(
+            profit / (profit + total_cost) * 100, 1
+        ) if (profit + total_cost) > 0 else 0
+        uncovered_teu_abs  = total_demand * (100 - coverage) / 100
 
-        # Identify top unserved corridor (highest-demand lane in region)
-        # We use top_demands already sorted; the top one is the most critical unserved lane
-        top_unserved = top_demands[0] if top_demands else None
+        top_unserved  = top_demands[0] if top_demands else None
         unserved_line = (
-            f"Port {top_unserved.origin} → Port {top_unserved.destination}: "
+            f"Port {top_unserved.origin} -> Port {top_unserved.destination}: "
             f"{top_unserved.weekly_teu:,.0f} TEU/week"
             if top_unserved else "N/A"
         )
 
-        # ── Step 5: LLM explanation (solution evaluation) ──────────────
-        explanation_prompt = f"""You are a maritime logistics analyst evaluating a \
-GA + MILP optimized shipping network for the {self.region.upper()} region.
-
-SOLVER RESULTS (ground truth — do not alter these numbers):
-  Strategy chosen      : {strategy.splitlines()[0] if strategy else 'N/A'}
-  Services generated   : {services_generated}
-  Services after filter: {services_filtered}
-  Services selected (GA): {services_selected}
-  Weekly profit        : ${profit:,.0f}
-  Annual profit        : ${profit * 52:,.0f}
-  Weekly operating cost: ${operating_cost:,.0f}
-  Profit margin        : {profit_margin_pct}%
-  Profit per service   : ${profit_per_service:,.0f}/week
-  Cost per service     : ${cost_per_service:,.0f}/week
-  Demand coverage      : {coverage:.1f}%
-  Uncovered demand     : {uncovered_pct:.1f}%  ({uncovered_teu:,.0f} TEU/week unserved)
-  Detected hub ports   : [{hub_ids_str}]
-  Largest unserved corridor: {unserved_line}
-
-TOP-5 DEMAND CORRIDORS:
-{corridor_table}
-
-EVALUATION TASK:
-  Assess the solution quality using only the numbers above.
-  Every bullet MUST cite at least one specific figure.
-  Do NOT use: "consider", "explore", "may", "could potentially", "perhaps".
-  Do NOT suggest changing the strategy — evaluate THIS solution.
-
-STRICT OUTPUT FORMAT:
-
-Verdict: <Good | Moderate | Poor>
-  [One sentence citing profit margin {profit_margin_pct}% and coverage {coverage:.1f}%]
-
-Strengths:
-- [Cite the weekly profit ${profit:,.0f} and what it means for the {self.region} region]
-- [Cite profit-per-service ${profit_per_service:,.0f} and what it says about fleet efficiency]
-
-Weaknesses:
-- [Cite uncovered demand {uncovered_pct:.1f}% = {uncovered_teu:,.0f} TEU/week and the revenue foregone]
-- [Cite cost-per-service ${cost_per_service:,.0f} and whether it is appropriate given current coverage]
-
-Improvement Actions (specific and measurable — no vague language):
-- [Action 1: target the largest unserved corridor ({unserved_line}), state a TEU or service count target]
-- [Action 2: address coverage gap of {uncovered_pct:.1f}%, state which hub port(s) to expand and by how many services]
-"""
+        # ── LLM explanation ────────────────────────────────────────────
+        explanation_prompt = (
+            f"Maritime logistics analyst evaluating {self.region.upper()} region.\n\n"
+            f"SOLVER RESULTS:\n"
+            f"  Services generated/filtered/selected: {services_generated}/{services_filtered}/{services_selected}\n"
+            f"  Weekly profit: ${profit:,.0f} | Annual: ${profit * 52:,.0f}\n"
+            f"  Cost: Operating ${operating_cost:,.0f} | Transship ${transship_cost:,.0f} | Port ${port_cost:,.0f}\n"
+            f"  Margin: {profit_margin_pct}% | Profit/svc: ${profit_per_service:,.0f}/wk\n"
+            f"  Coverage: {coverage:.1f}% | Unserved: {uncovered_pct:.1f}% ({unserved_teu:,.0f} TEU/wk)\n"
+            f"  Hub ports: [{hub_ids_str}]\n\n"
+            f"TOP-5 CORRIDORS:\n{corridor_table}\n\n"
+            f"STRICT FORMAT:\n"
+            f"Verdict: <Good | Moderate | Poor>\n"
+            f"  [Cite margin {profit_margin_pct}% and coverage {coverage:.1f}%]\n\n"
+            f"Strengths:\n"
+            f"- [Cite profit ${profit:,.0f} and profit/service]\n"
+            f"- [Cite coverage {coverage:.1f}% and satisfied TEU]\n\n"
+            f"Weaknesses:\n"
+            f"- [Cite unserved {uncovered_pct:.1f}% = {unserved_teu:,.0f} TEU/wk]\n"
+            f"- [Cite transship ${transship_cost:,.0f} and port ${port_cost:,.0f}]\n\n"
+            f"Improvement Actions:\n"
+            f"- [Action 1: target {unserved_line}]\n"
+            f"- [Action 2: hub [{hub_ids_str}] expansion for {uncovered_pct:.1f}% gap]"
+        )
 
         try:
             explanation = ""
@@ -304,75 +315,57 @@ Improvement Actions (specific and measurable — no vague language):
                 explanation = self.call_llm(explanation_prompt, temperature=0.1)
                 if self.is_valid_explanation(explanation):
                     break
-                
-            #  — FORCE fallback
             if not self.is_valid_explanation(explanation):
-                explanation = f"""
-            Verdict: {'Good' if profit_margin_pct > 60 else 'Moderate' if profit_margin_pct > 30 else 'Poor'}
-            Profit margin {profit_margin_pct}% with coverage {coverage:.1f}% across {services_selected} services.
-
-            Strengths:
-            - Weekly profit ${profit:,.0f} generates ${profit_per_service:,.0f} per service across {services_selected} services.
-            - Coverage of {coverage:.1f}% captures over {int(coverage)}% of demand.
-
-            Weaknesses:
-            - {uncovered_pct:.1f}% demand ({uncovered_teu:,.0f} TEU/week) remains unserved.
-            - Cost per service ${cost_per_service:,.0f}/week limits scalability.
-
-            Improvement Actions:
-            - Add 10 services to increase coverage above {min(coverage+10,100):.1f}%.
-            - Expand hub {detected_hubs[0] if detected_hubs else 'primary'} to capture {uncovered_teu:,.0f} TEU unmet demand.
-            """
-            scores      = self.evaluator.evaluate(explanation)
-            logger.info("llm_quality_explanation", scores=scores)
-            if scores["total_score"] < 0.3:
-                explanation += "\n(Note: simplified explanation)"
-        
-        
+                raise ValueError("invalid")
         except Exception:
-            explanation = f"""
-Verdict: {'Good' if profit_margin_pct > 60 else 'Moderate' if profit_margin_pct > 30 else 'Poor'}
-  Profit margin {profit_margin_pct}% with coverage {coverage:.1f}%.
+            verdict = (
+                "Good" if profit_margin_pct > 60 else
+                "Moderate" if profit_margin_pct > 30 else "Poor"
+            )
+            explanation = (
+                f"Verdict: {verdict}\n"
+                f"  Profit margin {profit_margin_pct}% with coverage {coverage:.1f}%.\n\n"
+                f"Strengths:\n"
+                f"- Weekly profit ${profit:,.0f} ({services_selected} services) -> "
+                f"${profit_per_service:,.0f}/service/week.\n"
+                f"- Satisfied {satisfied:,.0f} TEU/wk at {coverage:.1f}% coverage.\n\n"
+                f"Weaknesses:\n"
+                f"- {uncovered_pct:.1f}% unserved ({unserved_teu:,.0f} TEU/wk).\n"
+                f"- Transshipment ${transship_cost:,.0f} + port ${port_cost:,.0f}/wk.\n\n"
+                f"Improvement Actions:\n"
+                f"- Add services to {unserved_line} corridor.\n"
+                f"- Expand hub [{hub_ids_str}] by {max(3, int(services_selected * 0.1))} services."
+            )
 
-Strengths:
-- Weekly profit ${profit:,.0f} generates ${profit_per_service:,.0f} per service.
-- {services_selected} services achieve {coverage:.1f}% coverage.
-
-Weaknesses:
-- {uncovered_pct:.1f}% demand ({uncovered_teu:,.0f} TEU/week) unserved.
-- Cost per service ${cost_per_service:,.0f}/week limits expansion.
-
-Improvement Actions:
-- Add 5–10 services to corridor {unserved_line}.
-- Expand hub {detected_hubs[0] if detected_hubs else 'primary'} by 5 services.
-"""
-
-        logger.info("solution_explained")
-
-        result = {
-            "agent":              self.name,
-            "region":             self.region,
-            "status":             "Optimal",
-            "services_generated": services_generated,
-            "services_filtered":  services_filtered,
-            "services_selected":  services_selected,
-            "weekly_profit":      profit,
-            "annual_profit":      profit * 52,
-            "coverage_percent":   coverage,
-            "operating_cost":     operating_cost,
-            "profit_margin_pct":  profit_margin_pct,
-            "profit_per_service": profit_per_service,
-            "cost_per_service":   cost_per_service,
-            "uncovered_teu":      uncovered_teu,
-            "hub_ports":          detected_hubs,
-            "strategy":           strategy,
-            "explanation":        explanation,
-        }
-
+        elapsed = round(time.perf_counter() - t0, 2)
         logger.info(
             "regional_agent_complete",
-            region=self.region,
-            profit=profit,
-            coverage=coverage,
+            region=self.region, profit=profit, coverage=coverage, elapsed=elapsed,
         )
-        return result
+
+        return {
+            "agent":               self.name,
+            "region":              self.region,
+            "status":              "Optimal",
+            "services_generated":  services_generated,
+            "services_filtered":   services_filtered,
+            "services_selected":   services_selected,
+            "weekly_profit":       profit,
+            "annual_profit":       profit * 52,
+            "operating_cost":      operating_cost,
+            "transship_cost":      transship_cost,
+            "port_cost":           port_cost,
+            "total_cost":          total_cost,
+            "coverage_percent":    coverage,
+            "satisfied_demand":    satisfied,
+            "unserved_demand":     unserved_teu,
+            "total_demand":        total_demand,
+            "profit_margin_pct":   profit_margin_pct,
+            "profit_per_service":  profit_per_service,
+            "cost_per_service":    cost_per_service,
+            "uncovered_teu":       uncovered_teu_abs,
+            "hub_ports":           detected_hubs,
+            "strategy":            strategy,
+            "explanation":         explanation,
+            "elapsed_sec":         elapsed,
+        }

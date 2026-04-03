@@ -107,4 +107,4 @@ class CandidateServiceGenerator:
 
         all_services = corridor_services + feeder_services
 
-        return all_services[:num_services] 
+        return all_services[:num_services]

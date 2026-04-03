@@ -86,4 +86,3 @@ class PortClustering:
             }
 
         return summary
-   
