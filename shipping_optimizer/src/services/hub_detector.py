@@ -3,6 +3,8 @@ from collections import defaultdict
 
 
 class HubDetector:
+    # PERFORMANCE OPTIMIZATION: Class-level caching for demand scores
+    _demand_cache = {}
 
     def __init__(self, problem):
         self.problem = problem
@@ -10,13 +12,22 @@ class HubDetector:
     def compute_demand_scores(self):
         """
         Compute demand-based importance score for each port.
+
+        PERFORMANCE OPTIMIZATION: Cache demand scores by problem ID
         """
+        # Use Problem object identity for caching
+        cache_key = id(self.problem)
+        if cache_key in self._demand_cache:
+            return self._demand_cache[cache_key]
+
         scores = defaultdict(float)
 
         for d in self.problem.demands:
             scores[d.origin] += d.weekly_teu
             scores[d.destination] += d.weekly_teu
 
+        # Cache the result
+        self._demand_cache[cache_key] = scores
         return scores
 
     def compute_connectivity_scores(self):

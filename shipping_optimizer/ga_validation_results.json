@@ -1,0 +1,23 @@
+{
+  "service_ga": {
+    "runtime": 0.003007650375366211,
+    "services_selected": 3,
+    "fitness": 994713.8888888889,
+    "solution": [
+      1,
+      1,
+      1
+    ]
+  },
+  "frequency_ga": {
+    "runtime": 0.000997304916381836,
+    "active_frequencies": 3,
+    "fitness": 1721650.0,
+    "solution": [
+      1,
+      1,
+      1
+    ]
+  },
+  "validation_success": true
+}

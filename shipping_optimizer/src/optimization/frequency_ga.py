@@ -14,9 +14,14 @@ import math
 import random
 import logging
 import numpy as np
+import time
 from typing import List
 
 logger = logging.getLogger(__name__)
+
+# Phase-1.5 Control Optimizations - Step 1
+NO_IMPROVE_LIMIT = 8      # Reduced early stop threshold
+MAX_RUNTIME = 90          # Hard runtime cap in seconds
 
 MAX_FREQ = 3          # maximum sailings per week per service
 MIN_FREQ = 1
@@ -42,6 +47,12 @@ class FrequencyGA:
         self.num_services = len(services)
         self.active_idx   = [i for i, v in enumerate(services) if v == 1]
 
+        # PERFORMANCE OPTIMIZATION: Get pre-computed port sets from problem if available
+        if hasattr(problem, 'service_port_sets'):
+            self.service_port_sets = problem.service_port_sets
+        else:
+            self.service_port_sets = [set(svc.ports) for svc in problem.services]
+
         # ── Route-level demand for each service ──────────────────────
         self.route_demand = self._compute_route_demand()
         # ── Analytical starting frequency for each service ───────────
@@ -54,14 +65,29 @@ class FrequencyGA:
         """
         For each active service, sum the weekly TEU of demands where
         BOTH origin and destination are in the service's port list.
+
+        PERFORMANCE OPTIMIZATION: Use pre-computed port sets and demand grouping
         """
         route_demand = [0.0] * self.num_services
+
+        # Pre-group demands by origin for faster lookup
+        demand_by_origin = {}
+        for d in self.problem.demands:
+            demand_by_origin.setdefault(d.origin, []).append(d)
+
+        # For each active service, check demands efficiently
         for i in self.active_idx:
-            svc      = self.problem.services[i]
-            port_set = set(svc.ports)
-            for d in self.problem.demands:
-                if d.origin in port_set and d.destination in port_set:
-                    route_demand[i] += d.weekly_teu
+            port_set = self.service_port_sets[i]
+            total = 0.0
+
+            # Only check demands originating from ports in the service
+            for port in port_set:
+                for d in demand_by_origin.get(port, []):
+                    if d.destination in port_set:
+                        total += d.weekly_teu
+
+            route_demand[i] = total
+
         return route_demand
 
     # ------------------------------------------------------------------ #
@@ -103,6 +129,16 @@ class FrequencyGA:
 
         revenue = Σ_i min(capacity_i × freq_i, route_demand_i) × avg_rev/teu
         """
+        # ── FIX 1: Early fleet rejection BEFORE expensive computation ──
+        FLEET_SIZE = 300
+        vessels_used_early = sum(
+            math.ceil(self.problem.services[i].cycle_time * f / 7)
+            for i, f in enumerate(freq)
+            if f > 0 and self.services[i] == 1
+        )
+        if vessels_used_early > FLEET_SIZE:
+            return -1e9  # reject immediately — skip full evaluation
+
         total_capacity  = 0.0
         satisfied       = 0.0
         operating_cost  = 0.0
@@ -134,23 +170,9 @@ class FrequencyGA:
         hub_ratio = min(0.7, max(0.3, num_hubs / num_ports))
 
         transship_cost = hub_ratio * satisfied * self.problem.demands[0].revenue_per_teu * 0.05
-        # ── Fleet constraint penalty (NEW) ───────────────────────────
-        import math
 
-        FLEET_SIZE = 300  # you can move this to config later
-
-        vessels_used = sum(
-            math.ceil(self.problem.services[i].cycle_time * f / 7)
-            for i, f in enumerate(freq)
-            if f > 0 and self.services[i] == 1
-        )
-
-        if vessels_used > FLEET_SIZE:
-            fleet_penalty = (vessels_used - FLEET_SIZE) * 100000
-        else:
-            fleet_penalty = 0
-
-        return revenue - operating_cost -transship_cost- overcap_penalty - fleet_penalty
+        # Fleet already checked at top — no penalty needed here
+        return revenue - operating_cost - transship_cost - overcap_penalty
 
     # ------------------------------------------------------------------ #
     #  GA loop                                                              #
@@ -164,7 +186,14 @@ class FrequencyGA:
         best_fitness = max(fitness)
         no_improve   = 0
 
-        for _ in range(self.generations):
+        # Phase-1.5: Track start time for runtime cap
+        start_time = time.time()
+
+        for gen in range(self.generations):
+            # Phase-1.5: Check runtime cap
+            if time.time() - start_time > MAX_RUNTIME:
+                logger.info(f"frequency_ga_runtime_cap gen={gen} best_fitness={best_fitness}")
+                break
             ranked     = sorted(zip(population, fitness), key=lambda x: x[1], reverse=True)
             population = [x[0] for x in ranked[:10]]
 
@@ -186,9 +215,11 @@ class FrequencyGA:
             else:
                 no_improve += 1
 
-            if no_improve >= 15:
+            # Phase-1.5: Reduced early stop threshold
+            if no_improve >= NO_IMPROVE_LIMIT:
+                logger.info(f"frequency_ga_early_stop gen={gen} best_fitness={best_fitness}")
                 break
 
         best = population[int(np.argmax(fitness))]
-        logger.info("frequency_ga_complete", best_fitness=best_fitness)
+        logger.info(f"frequency_ga_complete best_fitness={best_fitness}")
         return best

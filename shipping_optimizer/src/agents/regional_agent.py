@@ -211,9 +211,9 @@ class RegionalAgent(BaseAgent):
         logger.info("hierarchical_ga_started")
         ga = HierarchicalGA(
             problem,
-            w_profit               = 0.5,
-            w_coverage             = 0.4,
-            w_cost                 = 0.1,
+            w_profit = getattr(problem, "profit_weight", 0.5),
+            w_coverage = getattr(problem, "coverage_weight", 0.4),
+            w_cost = getattr(problem, "cost_weight", 0.1),
             alpha_unserved         = ALPHA_UNSERVED,
             max_runtime_sec        = 55.0,
             transship_cost_per_teu = TRANSSHIP_COST_PER_TEU,
@@ -222,7 +222,7 @@ class RegionalAgent(BaseAgent):
         chromosome        = ga.run()
         services_selected = sum(chromosome["services"])
         logger.info("ga_complete", services_selected=services_selected)
-
+        
         # ── MILP decomposition by hub clusters ─────────────────────────
         logger.info("milp_decomposition_started")
         clusters        = self.split_by_hubs(problem)

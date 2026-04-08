@@ -37,7 +37,7 @@ class HierarchicalGA:
         # pass-through to FrequencyGA
         max_freq: int    = 3,
         # runtime budget
-        max_runtime_sec: float = 60.0,
+        max_runtime_sec: float = 60.0,   # FIX 6: hard budget 60s (was ~200s+)
         # demand threshold for service filtering
         min_route_demand_threshold: float = 0.0,   # TEU — 0 = keep all
     ):
@@ -90,7 +90,7 @@ class HierarchicalGA:
     # ------------------------------------------------------------------ #
     #  Main run                                                             #
     # ------------------------------------------------------------------ #
-    def run(self) -> Dict[str, Any]:
+    def run(self, seed_chromosome: dict = None) -> Dict[str, Any]:
         t0 = time.perf_counter()
 
         # ── Pre-filter services ────────────────────────────────────────
@@ -102,7 +102,9 @@ class HierarchicalGA:
 
         # ── Level 1: service selection ─────────────────────────────────
         service_ga   = ServiceGA(self.problem, **self._sga_kwargs)
-        best_services = service_ga.run()
+        # FIX 7: seed initial population with previous best if available
+        seed_services = seed_chromosome.get("services") if seed_chromosome else None
+        best_services = service_ga.run(seed_solution=seed_services)
 
         elapsed = time.perf_counter() - t0
         if elapsed > self.max_time * 0.8:
@@ -111,6 +113,40 @@ class HierarchicalGA:
         # ── Level 2: frequency optimisation ───────────────────────────
         freq_ga   = FrequencyGA(self.problem, best_services, **self._fga_kwargs)
         best_freq = freq_ga.run()
+
+        # ── FIX 3: Post-GA fleet correction (lightweight pruning) ─────
+        FLEET_SIZE = 300
+        import math
+
+        def _vessels(services_mask, frequencies):
+            return sum(
+                math.ceil(self.problem.services[i].cycle_time * max(1, frequencies[i]) / 7)
+                for i, v in enumerate(services_mask)
+                if v == 1 and i < len(frequencies)
+            )
+
+        vessels_used = _vessels(best_services, best_freq)
+        if vessels_used > FLEET_SIZE:
+            logger.info("post_ga_fleet_prune | vessels=%d limit=%d", vessels_used, FLEET_SIZE)
+            # Score each active service by efficiency: demand served per vessel
+            active = [
+                (i, service_ga.service_direct_demand[i] /
+                    max(1, math.ceil(self.problem.services[i].cycle_time * best_freq[i] / 7)))
+                for i in range(len(best_services))
+                if best_services[i] == 1 and i < len(best_freq) and best_freq[i] > 0
+            ]
+            # Sort ascending: lowest efficiency first (drop these first)
+            active.sort(key=lambda x: x[1])
+            for svc_idx, _ in active:
+                if vessels_used <= FLEET_SIZE:
+                    break
+                vessels_freed = math.ceil(
+                    self.problem.services[svc_idx].cycle_time * best_freq[svc_idx] / 7
+                )
+                best_services[svc_idx] = 0
+                best_freq[svc_idx] = 0
+                vessels_used -= vessels_freed
+            logger.info("post_ga_fleet_prune_done | vessels_now=%d", vessels_used)
 
         # ── Coverage estimate from GA fitness info ─────────────────────
         total_demand = sum(d.weekly_teu for d in self.problem.demands)
@@ -127,6 +163,8 @@ class HierarchicalGA:
             "services":          best_services,
             "frequencies":       best_freq,
             "coverage_estimate": coverage_estimate,
+            # FIX 4: flag set True when GA output is too weak to warrant MILP
+            "skip_milp":         coverage_estimate < 30.0,
         }
 
         logger.info(

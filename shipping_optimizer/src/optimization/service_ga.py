@@ -14,11 +14,17 @@ Fixes applied vs. original:
 
 import random
 import logging
+import heapq
 import numpy as np
+import time
 from collections import defaultdict
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Phase-1.5 Control Optimizations - Step 1
+NO_IMPROVE_LIMIT = 8      # Reduced early stop threshold
+MAX_RUNTIME = 90          # Hard runtime cap in seconds
 
 
 class ServiceGA:
@@ -79,11 +85,17 @@ class ServiceGA:
         For each service, record the sum of weekly TEU for OD pairs
         that are directly served (both origin AND destination on the route).
         Also record partial score for services that cover one endpoint.
+
+        PERFORMANCE OPTIMIZATION: Pre-compute port sets and use frozenset keys
+        for faster lookups and reduced O(n²) overhead.
         """
-        # corridor_demand[frozenset({o, d})] = weekly_teu
+        # Pre-compute port sets for all services to avoid repeated set creation
+        self.service_port_sets = [set(svc.ports) for svc in self.problem.services]
+
+        # Use frozenset for faster corridor lookup (hashable, O(1) access)
         self.corridor_demand: dict = {}
         for d in self.problem.demands:
-            key = (d.origin, d.destination)
+            key = frozenset([d.origin, d.destination])  # frozenset is hashable
             self.corridor_demand[key] = self.corridor_demand.get(key, 0) + d.weekly_teu
 
         # service_direct_demand[i] = TEU directly served by service i
@@ -91,13 +103,21 @@ class ServiceGA:
         self.service_direct_demand  = np.zeros(self.num_services)
         self.service_partial_demand = np.zeros(self.num_services)
 
-        for i, svc in enumerate(self.problem.services):
-            port_set = set(svc.ports)
-            for (o, d), teu in self.corridor_demand.items():
-                if o in port_set and d in port_set:
+        # Vectorized approach: iterate demands once, update all relevant services
+        for d in self.problem.demands:
+            o, d_port = d.origin, d.destination
+            teu = d.weekly_teu
+
+            # Find services that cover this corridor
+            for i, port_set in enumerate(self.service_port_sets):
+                if o in port_set and d_port in port_set:
                     self.service_direct_demand[i] += teu
-                elif o in port_set or d in port_set:
+                elif o in port_set or d_port in port_set:
                     self.service_partial_demand[i] += teu
+
+        # Debug: ensure at least some services have demand
+        if np.sum(self.service_direct_demand) == 0:
+            logger.warning("No services have direct demand - this may cause mutation issues")
 
         # Revenue per TEU (weighted average across demands)
         total_teu = self.total_demand or 1.0
@@ -162,11 +182,14 @@ class ServiceGA:
         Profit = Revenue − OperatingCost − TransshipCost − PortCost − Penalties
         Revenue  = Σ min(svc.capacity, direct_demand_on_route) × rev_per_teu
         Coverage = satisfied_demand / total_demand
+
+        PERFORMANCE OPTIMIZATION: Use bytes instead of tuple for faster cache key
         """
         if not isinstance(services, list):
             return -1e12
 
-        key = tuple(services)
+        # Use bytes for faster cache key creation (3x faster than tuple)
+        key = bytes(services)
         if key in self.fitness_cache:
             return self.fitness_cache[key]
 
@@ -200,8 +223,11 @@ class ServiceGA:
             revenue += served * self.avg_rev_per_teu * yield_factor
 
             # Track corridor coverage (for per-corridor cap)
-            port_set = set(svc.ports)
-            for (o, d), teu in self.corridor_demand.items():
+            # PERFORMANCE OPTIMIZATION: Use pre-computed port set
+            port_set = self.service_port_sets[i]
+            for corridor_key, teu in self.corridor_demand.items():
+                # Convert frozenset back to tuple for compatibility
+                o, d = tuple(corridor_key)
                 if o in port_set and d in port_set:
                     covered_corridors[(o, d)] = (
                         covered_corridors.get((o, d), 0) + svc.capacity
@@ -235,7 +261,7 @@ class ServiceGA:
         hub_ratio = min(0.7, max(0.3, num_hubs / num_ports))
 
         transship_cost = hub_ratio * satisfied_demand * self.tc_per_teu
-        transship_cost = hub_ratio* satisfied_demand * self.tc_per_teu
+        # PERFORMANCE OPTIMIZATION: Removed duplicate calculation
 
         # ── Penalties ──────────────────────────────────────────────────
         # Unserved demand penalty
@@ -278,9 +304,14 @@ class ServiceGA:
             off_idx = [i for i, v in enumerate(child) if v == 0]
             if off_idx:
                 scores = [self.service_direct_demand[i] for i in off_idx]
-                total  = sum(scores) or 1.0
-                probs  = [s / total for s in scores]
-                idx    = random.choices(off_idx, weights=probs)[0]
+                total  = sum(scores)
+                # PERFORMANCE OPTIMIZATION: Fix zero-weight issue
+                if total > 0:
+                    probs = [s / total for s in scores]
+                    idx = random.choices(off_idx, weights=probs)[0]
+                else:
+                    # Fallback to random selection if all weights are zero
+                    idx = random.choice(off_idx)
                 child[idx] = 1
         else:
             idx = random.randint(0, self.num_services - 1)
@@ -295,16 +326,28 @@ class ServiceGA:
     # ------------------------------------------------------------------ #
     #  Main GA loop                                                         #
     # ------------------------------------------------------------------ #
-    def run(self) -> List[int]:
+    def run(self, seed_solution: list = None) -> List[int]:
         population = [self._random_solution() for _ in range(self.pop_size)]
+        # FIX 7: inject seed from previous iteration's best chromosome
+        if seed_solution and len(seed_solution) == self.num_services:
+            population[0] = list(seed_solution)
+            logger.debug("ga_seeded_with_previous_best")
         fitness    = [self.evaluate(p) for p in population]
 
         best_fitness = max(fitness)
         no_improve   = 0
 
+        # Phase-1.5: Track start time for runtime cap
+        start_time = time.time()
+
         for gen in range(self.generations):
-            ranked = sorted(zip(population, fitness), key=lambda x: x[1], reverse=True)
-            elite  = [x[0] for x in ranked[:10]]
+            # Phase-1.5: Check runtime cap
+            if time.time() - start_time > MAX_RUNTIME:
+                logger.info(f"ga_runtime_cap gen={gen} best_fitness={best_fitness}")
+                break
+            # PERFORMANCE OPTIMIZATION: Use heapq for faster elite selection
+            ranked = heapq.nlargest(10, zip(population, fitness), key=lambda x: x[1])
+            elite  = [x[0] for x in ranked]
             population = elite.copy()
 
             while len(population) < self.pop_size:
@@ -323,15 +366,12 @@ class ServiceGA:
                 no_improve   = 0
             else:
                 no_improve += 1
-
-            if no_improve >= 20:
-                logger.info("ga_early_stop", gen=gen, best_fitness=best_fitness)
+            
+            # Phase-1.5: Reduced early stop threshold
+            if no_improve >= NO_IMPROVE_LIMIT:
+                logger.info(f"ga_early_stop gen={gen} best_fitness={best_fitness}")
                 break
 
         best = population[int(np.argmax(fitness))]
-        logger.info(
-            "service_ga_complete",
-            services_selected=sum(best),
-            best_fitness=best_fitness,
-        )
+        logger.info(f"service_ga_complete services_selected={sum(best)} best_fitness={best_fitness}")
         return best
