@@ -1,17 +1,3 @@
-"""
-service_ga.py  — Demand-Driven Service Selection GA
-=====================================================
-Fixes applied vs. original:
-  1. Fitness uses estimated_served_demand = min(route_capacity, corridor_demand)
-     instead of capacity × avg_revenue (which assumed 100% utilisation).
-  2. Every service is scored against actual OD demand it touches.
-  3. Demand-alignment penalty removes services with zero corridor coverage.
-  4. Coverage reward term drives the GA toward high-demand lane saturation.
-  5. LLM calls are OUTSIDE the fitness function (budget guard unchanged).
-  6. Hard iteration cap (generations) prevents infinite loops.
-  7. All parameters are configurable via constructor args.
-"""
-
 import random
 import logging
 import heapq
@@ -29,7 +15,7 @@ MAX_RUNTIME = 90          # Hard runtime cap in seconds
 
 class ServiceGA:
     # ------------------------------------------------------------------ #
-    #  Construction                                                         #
+    #  Construction                                                      #
     # ------------------------------------------------------------------ #
     def __init__(
         self,
@@ -86,7 +72,7 @@ class ServiceGA:
         that are directly served (both origin AND destination on the route).
         Also record partial score for services that cover one endpoint.
 
-        PERFORMANCE OPTIMIZATION: Pre-compute port sets and use frozenset keys
+        Pre-compute port sets and use frozenset keys
         for faster lookups and reduced O(n²) overhead.
         """
         # Pre-compute port sets for all services to avoid repeated set creation
@@ -132,7 +118,7 @@ class ServiceGA:
         )
 
     # ------------------------------------------------------------------ #
-    #  Adaptive parameter tuning (heuristic — no LLM)                     #
+    #  Adaptive parameter tuning (heuristic — no LLM)                    #
     # ------------------------------------------------------------------ #
     def _tune_parameters(self):
         n = self.num_services
@@ -148,7 +134,7 @@ class ServiceGA:
         logger.debug("ga_params_tuned", pop_size=self.pop_size, mut=self.mutation_rate)
 
     # ------------------------------------------------------------------ #
-    #  Smart initialisation                                                 #
+    #  Smart initialisation                                              #
     # ------------------------------------------------------------------ #
     def _random_solution(self) -> List[int]:
         """
@@ -173,7 +159,7 @@ class ServiceGA:
         return sol
 
     # ------------------------------------------------------------------ #
-    #  Fitness (demand-driven, multi-objective)                            #
+    #  Fitness (demand-driven, multi-objective)                          #
     # ------------------------------------------------------------------ #
     def evaluate(self, services: List[int]) -> float:
         """
@@ -183,12 +169,12 @@ class ServiceGA:
         Revenue  = Σ min(svc.capacity, direct_demand_on_route) × rev_per_teu
         Coverage = satisfied_demand / total_demand
 
-        PERFORMANCE OPTIMIZATION: Use bytes instead of tuple for faster cache key
+        Used bytes instead of tuple for faster cache key
         """
         if not isinstance(services, list):
             return -1e12
 
-        # Use bytes for faster cache key creation (3x faster than tuple)
+        # Use bytes for faster cache key creation 
         key = bytes(services)
         if key in self.fitness_cache:
             return self.fitness_cache[key]
@@ -294,7 +280,7 @@ class ServiceGA:
         return fitness
 
     # ------------------------------------------------------------------ #
-    #  GA operators                                                         #
+    #  GA operators                                                      #
     # ------------------------------------------------------------------ #
     def _mutate(self, sol: List[int]) -> List[int]:
         child = sol.copy()
@@ -324,28 +310,23 @@ class ServiceGA:
         return p1[:point] + p2[point:]
 
     # ------------------------------------------------------------------ #
-    #  Main GA loop                                                         #
+    #  Main GA loop                                                      #
     # ------------------------------------------------------------------ #
     def run(self, seed_solution: list = None) -> List[int]:
         population = [self._random_solution() for _ in range(self.pop_size)]
-        # FIX 7: inject seed from previous iteration's best chromosome
         if seed_solution and len(seed_solution) == self.num_services:
             population[0] = list(seed_solution)
             logger.debug("ga_seeded_with_previous_best")
         fitness    = [self.evaluate(p) for p in population]
-
         best_fitness = max(fitness)
         no_improve   = 0
-
-        # Phase-1.5: Track start time for runtime cap
         start_time = time.time()
 
         for gen in range(self.generations):
-            # Phase-1.5: Check runtime cap
             if time.time() - start_time > MAX_RUNTIME:
                 logger.info(f"ga_runtime_cap gen={gen} best_fitness={best_fitness}")
                 break
-            # PERFORMANCE OPTIMIZATION: Use heapq for faster elite selection
+            #heapq for faster elite selection
             ranked = heapq.nlargest(10, zip(population, fitness), key=lambda x: x[1])
             elite  = [x[0] for x in ranked]
             population = elite.copy()
@@ -367,7 +348,6 @@ class ServiceGA:
             else:
                 no_improve += 1
             
-            # Phase-1.5: Reduced early stop threshold
             if no_improve >= NO_IMPROVE_LIMIT:
                 logger.info(f"ga_early_stop gen={gen} best_fitness={best_fitness}")
                 break

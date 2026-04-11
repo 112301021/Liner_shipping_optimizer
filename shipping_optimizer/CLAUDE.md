@@ -312,7 +312,7 @@ NO user hand-holding required
 
 
 
-\* Use qwen2.5:3b for stability
+\* Use mistral for stability
 
 \* Keep context ≤ 2048
 

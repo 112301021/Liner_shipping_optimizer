@@ -1,15 +1,3 @@
-"""
-frequency_ga.py  — Route-Level Frequency Optimisation GA
-==========================================================
-Fixes applied vs. original:
-  1. Frequency is determined per-service from actual corridor demand
-     (not global demand), matching supply to demand at route granularity.
-  2. optimal_freq = ceil(route_demand / service_capacity), capped at max_freq.
-  3. GA refines around the analytical estimate rather than starting blind.
-  4. Overcapacity penalty (unused slots cost money) is included in fitness.
-  5. All parameters are configurable.
-"""
-
 import math
 import random
 import logging
@@ -19,7 +7,7 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-# Phase-1.5 Control Optimizations - Step 1
+
 NO_IMPROVE_LIMIT = 8      # Reduced early stop threshold
 MAX_RUNTIME = 90          # Hard runtime cap in seconds
 
@@ -38,7 +26,7 @@ class FrequencyGA:
         overcap_penalty: float = 0.015,   # fraction of unused capacity × weekly_cost
     ):
         self.problem    = problem
-        self.services   = services        # binary mask
+        self.services   = services        
         self.max_freq   = max_freq
         self.pop_size   = pop_size
         self.generations = generations
@@ -47,7 +35,7 @@ class FrequencyGA:
         self.num_services = len(services)
         self.active_idx   = [i for i, v in enumerate(services) if v == 1]
 
-        # PERFORMANCE OPTIMIZATION: Get pre-computed port sets from problem if available
+        #pre-computed port sets from problem if available
         if hasattr(problem, 'service_port_sets'):
             self.service_port_sets = problem.service_port_sets
         else:
@@ -65,8 +53,6 @@ class FrequencyGA:
         """
         For each active service, sum the weekly TEU of demands where
         BOTH origin and destination are in the service's port list.
-
-        PERFORMANCE OPTIMIZATION: Use pre-computed port sets and demand grouping
         """
         route_demand = [0.0] * self.num_services
 
@@ -129,7 +115,7 @@ class FrequencyGA:
 
         revenue = Σ_i min(capacity_i × freq_i, route_demand_i) × avg_rev/teu
         """
-        # ── FIX 1: Early fleet rejection BEFORE expensive computation ──
+        # ── Early fleet rejection BEFORE expensive computation ──
         FLEET_SIZE = 300
         vessels_used_early = sum(
             math.ceil(self.problem.services[i].cycle_time * f / 7)
@@ -185,12 +171,9 @@ class FrequencyGA:
         fitness    = [self._evaluate(p) for p in population]
         best_fitness = max(fitness)
         no_improve   = 0
-
-        # Phase-1.5: Track start time for runtime cap
         start_time = time.time()
 
         for gen in range(self.generations):
-            # Phase-1.5: Check runtime cap
             if time.time() - start_time > MAX_RUNTIME:
                 logger.info(f"frequency_ga_runtime_cap gen={gen} best_fitness={best_fitness}")
                 break
@@ -215,7 +198,6 @@ class FrequencyGA:
             else:
                 no_improve += 1
 
-            # Phase-1.5: Reduced early stop threshold
             if no_improve >= NO_IMPROVE_LIMIT:
                 logger.info(f"frequency_ga_early_stop gen={gen} best_fitness={best_fitness}")
                 break

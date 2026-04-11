@@ -1,15 +1,3 @@
-"""
-hub_milp.py  — Enhanced MILP Flow Optimiser
-=============================================
-Critical fixes:
-  1. max_transfer_pairs default raised to 2000.
-  2. Transfer pair enumeration prioritises by DEMAND VOLUME at hub
-     so highest-impact transshipments always make it within the cap.
-  3. min_coverage default = 0.0 (was 0.30, infeasible with sparse pools).
-  4. Coverage driven by alpha_unserved penalty ($300/TEU default).
-  5. Single MILP solve. Full cost breakdown output.
-"""
-
 import logging
 import pulp
 from collections import defaultdict
@@ -29,14 +17,14 @@ class HubMILP:
         problem,
         chromosome,
         max_services_per_demand: int  = 10,
-        max_transfer_pairs: int       = 2000,  # RAISED: essential for hub routing
+        max_transfer_pairs: int       = 2000, 
         transship_cost_per_teu: float = DEFAULT_TRANSSHIP_COST,
         port_cost_per_teu: float      = DEFAULT_PORT_COST,
         port_capacity: float          = DEFAULT_PORT_CAPACITY,
         min_coverage: float           = DEFAULT_MIN_COVERAGE,
         w_profit: float               = 0.5,
         w_coverage: float             = 0.4,
-        alpha_unserved: float         = 300.0,  # RAISED: $300 >> operating cost/TEU
+        alpha_unserved: float         = 300.0,  
         time_limit: int               = 120,
         fleet_size: int = 300,
     ):
@@ -245,7 +233,7 @@ class HubMILP:
         prob += profit_expr + coverage_reward
         
         # ─────────────────────────────────────────────
-        # Fleet constraint (NEW)
+        # Fleet constraint 
         # ─────────────────────────────────────────────
         services_mask = self.chromosome.get("services", [])
         frequencies   = self.chromosome.get("frequencies", [])

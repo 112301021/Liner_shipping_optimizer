@@ -1,19 +1,3 @@
-"""
-service_generator_agent.py — Shipping Service Generator Agent
-==============================================================
-Critical fixes for coverage and strategy diversity:
-  1. Strategy selection based on MEDIAN demand per corridor (not top-3 share).
-     With 9622 corridors and median=5 TEU, this is ALWAYS a hub-and-spoke
-     or hybrid network — top-3 share will always be < 20% regardless.
-  2. Multi-port loop services generated: each service visits 4-8 ports,
-     covering N*(N-1) OD pairs per route — far more efficient than 2-port direct.
-  3. Regional hub services: each hub gets a dedicated regional loop linking
-     it to its top-10 highest-demand spoke ports.
-  4. Top-500 direct services for high-demand corridors.
-  5. Feeder services for all spoke ports to nearest hub.
-  6. All services pass margin filter (capacity*0.5*150 > weekly_cost).
-"""
-
 import logging
 import random
 from typing import Dict, Any, List
@@ -59,8 +43,6 @@ class ServiceGeneratorAgent(BaseAgent):
         sid = 0
 
         # ── A: Direct services for top-500 high-demand corridors ───────
-        # Covers 45.5% of total demand directly.
-        # Margin: 8000 * 0.5 * 150 = 600k > 150k ✓
         top_demands  = sorted(problem.demands, key=lambda d: d.weekly_teu, reverse=True)
         top_n_direct = min(500, len(top_demands))
         for d in top_demands[:top_n_direct]:
@@ -75,9 +57,7 @@ class ServiceGeneratorAgent(BaseAgent):
 
         # ── B: Multi-port regional loop services via each hub ───────────
         # Each loop visits the hub + its top-N spoke ports.
-        # A 6-port loop covers 30 directional OD pairs per service.
         # This is the key driver of transshipment coverage.
-        # Margin: 10000 * 0.5 * 150 = 750k > 180k ✓
         demand_by_port = defaultdict(float)
         for d in problem.demands:
             demand_by_port[d.origin]      += d.weekly_teu
@@ -113,7 +93,6 @@ class ServiceGeneratorAgent(BaseAgent):
         logger.info("hub_loop_services_added", count=loop_count)
 
         # ── C: Hub-to-hub trunk routes ──────────────────────────────────
-        # Margin: 12000 * 0.5 * 150 = 900k > 200k ✓
         trunk_count = 0
         for i in range(len(top10_hubs)):
             for j in range(i + 1, len(top10_hubs)):
@@ -127,7 +106,6 @@ class ServiceGeneratorAgent(BaseAgent):
 
         # ── D: Feeder services — every spoke to best hub ────────────────
         # Essential for transshipment: spoke -> hub -> destination.
-        # Margin: 4000 * 0.5 * 150 = 300k > 70k ✓
         spoke_ports = [p.id for p in problem.ports if p.id not in hub_set]
 
         # Demand-weighted hub affinity for each spoke
@@ -158,7 +136,7 @@ class ServiceGeneratorAgent(BaseAgent):
         logger.info("feeder_services_added", count=feeder_count)
 
         # ── E: Heuristic base candidate pool ───────────────────────────
-        # Margin: 6000 * 0.5 * 150 = 450k > 120k ✓
+
         generator = CandidateServiceGenerator(problem)
         generator._service_id_counter = sid
         base_services = generator.generate_services(num_services=150)
@@ -191,8 +169,7 @@ class ServiceGeneratorAgent(BaseAgent):
         hub_ids_str  = ", ".join(str(h) for h in hubs[:10])
         spoke_count  = max(0, num_ports - 20)
 
-        # Correct strategy selection: based on demand dispersion, not top-3 share
-        # With median=5 TEU and 9622 corridors, this is ALWAYS a hub-spoke network
+        # Correct strategy selection: based on demand dispersion
         if median_demand <= 10 and num_lanes > 1000:
             archetype = "HYBRID"
             rationale = (

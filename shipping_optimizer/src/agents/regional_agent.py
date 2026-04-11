@@ -1,22 +1,7 @@
-"""
-regional_agent.py  — Demand-Aware Regional Optimisation Agent
-==============================================================
-Critical fixes:
-  1. MIN_COVERAGE_FLOOR = 0.0 (infeasible at 0.30 with sparse pool).
-  2. max_transfer_pairs = 2000 (was 500/60 — bottleneck for hub routing).
-  3. ALPHA_UNSERVED = 300.0 (was 50 — too low vs avg revenue $2009/TEU;
-     now MILP is strongly incentivised to serve demand via transshipment).
-  4. Service cap raised to max(400, num_ports) for better coverage.
-  5. Coverage denominator = regional total_demand (NOT sum of cluster totals
-     which double-counts cross-cluster OD pairs).
-  6. Strategy selection uses median demand, not top-3 share.
-  7. All hardened output fields present.
-"""
-
+import re
 import time
 import logging
 from typing import Dict, Any, List
-
 from src.llm.evaluator                  import LLMEvaluator
 from src.agents.base                    import BaseAgent
 from src.agents.service_generator_agent import ServiceGeneratorAgent
@@ -30,12 +15,9 @@ logger = logging.getLogger(__name__)
 # ── Shared cost constants — identical in GA and MILP ──────────────────
 TRANSSHIP_COST_PER_TEU = 80.0
 PORT_COST_PER_TEU      = 15.0
-# RAISED: avg revenue = $2009/TEU; alpha=$300 strongly incentivises MILP
-# to serve demand rather than pay penalty
 ALPHA_UNSERVED         = 300.0
-MIN_COVERAGE_FLOOR     = 0.0    # 0.30 was infeasible; penalty drives coverage
-MAX_TRANSFER_PAIRS     = 2000   # RAISED from 500/60 — essential for hub routing
-
+MIN_COVERAGE_FLOOR     = 0.0    
+MAX_TRANSFER_PAIRS     = 2000   
 
 class RegionalAgent(BaseAgent):
 
@@ -55,7 +37,6 @@ class RegionalAgent(BaseAgent):
         )
 
     def is_valid_explanation(self, text: str) -> bool:
-        import re
         required = ["Verdict:", "Strength", "Weakness", "Improvement"]
         return all(r in text for r in required) and bool(re.search(r"\d{2,}", text))
 
@@ -80,13 +61,6 @@ class RegionalAgent(BaseAgent):
     def _filter_services(self, problem: Problem) -> Problem:
         """
         Keep services covering demand corridors with positive margin.
-        Service cap raised to max(400, num_ports) to allow more coverage.
-
-        All newly-generated services pass the margin filter by design:
-          direct  cap=8000,  cost=150k -> 600k > 150k ✓
-          loop    cap=10000, cost=180k -> 750k > 180k ✓
-          trunk   cap=12000, cost=200k -> 900k > 200k ✓
-          feeder  cap=4000,  cost=70k  -> 300k > 70k  ✓
         """
         corridor_set = {(d.origin, d.destination) for d in problem.demands}
         kept = []
@@ -98,7 +72,6 @@ class RegionalAgent(BaseAgent):
                 kept.append(svc)
 
         num_ports    = len(problem.ports)
-        # RAISED cap: ensures enough services for good hub-spoke coverage
         max_services = max(400, num_ports)
         kept = sorted(kept, key=lambda s: s.capacity / (s.weekly_cost + 1), reverse=True)[:max_services]
 
@@ -137,7 +110,7 @@ class RegionalAgent(BaseAgent):
         detected_hubs = hub_detector.detect_hubs(top_k=5)
         hub_ids_str   = ", ".join(str(h) for h in detected_hubs)
 
-        # Strategy based on demand dispersion (not top-3 share which is always < 20%)
+        # Strategy based on demand dispersion 
         if median_demand <= 10 and num_lanes > 500:
             strat_code = "C"
             strat_name = "hybrid"

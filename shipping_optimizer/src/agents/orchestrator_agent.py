@@ -1,21 +1,3 @@
-"""
-orchestrator_agent.py — Master Network Orchestrator
-====================================================
-Changes over the uploaded version:
-  1. _apply_feedback: reads coordinator's weight_adjustments dict and applies
-     them to the Problem object (profit_weight, coverage_weight, cost_weight)
-     so the next GA pass actually uses different weights — not just bumps
-     exploration_factor.
-  2. process(): passes iteration counter to coordinator so feedback gradients
-     respect the MAX_RERUN_ITERATIONS cap.
-  3. Iteration audit trail: every loop iteration is logged with before/after
-     metrics so you can see in logs exactly when feedback fired and what changed.
-  4. decision_output included in final return for test assertions.
-  5. summary_metrics contains 'cost' key required by existing test suite.
-  6. status = 'complete' always set.
-  7. aggregate_results: unchanged — uses true_global_demand as denominator.
-"""
-
 from __future__ import annotations
 
 import re
@@ -83,7 +65,7 @@ class OrchestratorAgent(BaseAgent):
         return all(r in text for r in required) and bool(re.search(r"\d{2,}", text))
 
     # ================================================================
-    # Problem analysis (unchanged from uploaded version)
+    # Problem analysis 
     # ================================================================
 
     def analyze_problem(self, problem: Problem) -> str:
@@ -153,7 +135,7 @@ class OrchestratorAgent(BaseAgent):
         return analysis
 
     # ================================================================
-    # Aggregate results (unchanged — true_global_demand denominator)
+    # Aggregate results 
     # ================================================================
 
     def aggregate_results(
@@ -194,7 +176,7 @@ class OrchestratorAgent(BaseAgent):
             "transship_cost":  total_transship,
             "port_cost":       total_port_cost,
             "total_cost":      total_cost,
-            "cost":            total_cost,           # alias for test suite
+            "cost":            total_cost,           
             "total_services":  total_services,
             "satisfied_demand": total_satisfied,
             "unserved_demand": total_unserved,
@@ -202,7 +184,7 @@ class OrchestratorAgent(BaseAgent):
         }
 
     # ================================================================
-    # Feedback application — THE KEY FIX
+    # Feedback application 
     # ================================================================
 
     def _apply_feedback(self, problem: Problem, decision_output: Dict) -> Problem:
@@ -285,7 +267,7 @@ class OrchestratorAgent(BaseAgent):
         # ── Feedback / resolution loop ─────────────────────────────────────
         regional_results: List[Dict] = []
         decision_output:  Dict       = {}
-        prev_coverage: float         = -1.0   # FIX 5: track previous iteration coverage
+        prev_coverage: float         = -1.0   #track previous iteration coverage
 
         for iteration in range(MAX_ITERATIONS):
             logger.info("iteration_start", iteration=iteration)
@@ -359,7 +341,6 @@ class OrchestratorAgent(BaseAgent):
                 )
                 break
 
-            # FIX 5: Early stop if coverage improvement < 1% between iterations
             if prev_coverage >= 0 and (iter_coverage - prev_coverage) < 1.0:
                 logger.info(
                     "pipeline_early_stop_no_coverage_gain",
@@ -480,6 +461,6 @@ class OrchestratorAgent(BaseAgent):
             "decision_output":   decision_output,
             "executive_summary": executive_summary,
             "summary_metrics":   metrics,
-            "iteration_audit":   self.iteration_audit,   # ← NEW: full loop history
+            "iteration_audit":   self.iteration_audit,   
             "iterations_run":    len(self.iteration_audit),
         }

@@ -1,15 +1,3 @@
-"""
-hierarchical_ga.py  — Two-Level GA Orchestrator
-=================================================
-Fixes applied vs. original:
-  1. ServiceGA now uses demand-driven fitness (see service_ga.py).
-  2. FrequencyGA now uses route-level demand per service (see frequency_ga.py).
-  3. Smart service filtering is applied BEFORE frequency optimisation to remove
-     services with zero corridor demand (saves compute, improves GA quality).
-  4. Hard runtime budget (60 s default) prevents runaway execution.
-  5. Returns enriched chromosome including demand coverage estimate.
-"""
-
 import logging
 import time
 from typing import Dict, Any
@@ -102,7 +90,6 @@ class HierarchicalGA:
 
         # ── Level 1: service selection ─────────────────────────────────
         service_ga   = ServiceGA(self.problem, **self._sga_kwargs)
-        # FIX 7: seed initial population with previous best if available
         seed_services = seed_chromosome.get("services") if seed_chromosome else None
         best_services = service_ga.run(seed_solution=seed_services)
 
@@ -113,8 +100,6 @@ class HierarchicalGA:
         # ── Level 2: frequency optimisation ───────────────────────────
         freq_ga   = FrequencyGA(self.problem, best_services, **self._fga_kwargs)
         best_freq = freq_ga.run()
-
-        # ── FIX 3: Post-GA fleet correction (lightweight pruning) ─────
         FLEET_SIZE = 300
         import math
 
@@ -135,7 +120,7 @@ class HierarchicalGA:
                 for i in range(len(best_services))
                 if best_services[i] == 1 and i < len(best_freq) and best_freq[i] > 0
             ]
-            # Sort ascending: lowest efficiency first (drop these first)
+            # Sort ascending: lowest efficiency first 
             active.sort(key=lambda x: x[1])
             for svc_idx, _ in active:
                 if vessels_used <= FLEET_SIZE:
@@ -163,7 +148,7 @@ class HierarchicalGA:
             "services":          best_services,
             "frequencies":       best_freq,
             "coverage_estimate": coverage_estimate,
-            # FIX 4: flag set True when GA output is too weak to warrant MILP
+            #flag set True when GA output is too weak to warrant MILP
             "skip_milp":         coverage_estimate < 30.0,
         }
 

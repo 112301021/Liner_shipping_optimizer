@@ -1,26 +1,7 @@
-"""
-coordinator_agent.py — Production Coordinator / Decision Agent
-==============================================================
-Fixes over the uploaded version:
-  1. _identify_conflicts: handles chromosome["services"] as EITHER a binary
-     list OR a list of service-id strings (both formats used in the codebase).
-  2. _generate_decisions: extracts structured JSON from LLM properly and
-     falls back to a rule-based decision tree — no more {"raw": text}.
-  3. _generate_feedback_signals: returns GRADIENT signals (floats), not just
-     binary flags, so the orchestrator knows HOW MUCH to adjust.
-  4. _resolve_conflicts: new method — applies concrete per-conflict fix
-     (drop the service from the lower-profit region's chromosome).
-  5. Full iteration audit trail: every rerun reason is logged with numbers.
-  6. "needs_rerun" is False only when both coverage and conflict thresholds
-     are met — prevents premature convergence AND infinite loops.
-"""
-
 from __future__ import annotations
-
 import json
 import re
 from typing import Any, Dict, List
-
 from src.agents.base   import BaseAgent
 from src.utils.config  import Config
 from src.utils.logger  import logger
@@ -136,7 +117,6 @@ class CoordinatorAgent(BaseAgent):
 
             if not services:
                 continue
-
             # Detect format
             if isinstance(services[0], int):
                 # Format A: binary list
