@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ':*)",
+      "Bash(mkdir -p graphify-out)"
+    ]
+  }
+}

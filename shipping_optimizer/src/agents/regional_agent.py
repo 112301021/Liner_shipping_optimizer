@@ -29,7 +29,7 @@ class RegionalAgent(BaseAgent):
     def get_system_prompt(self) -> str:
         return (
             f"You are a liner shipping network optimisation analyst for the {self.region} region.\n\n"
-            "Your output feeds directly into a Decision Agent reviewed by academic supervisors.\n"
+            "Your output feeds directly into a Decision Agent reviewed by maritime analyst from global liner shipping company.\n"
             "1. Every claim must cite a specific number from the data.\n"
             "2. No vague language: 'consider', 'explore', 'may', 'could potentially'.\n"
             "3. Strategy reasons must name specific port IDs or TEU volumes.\n"

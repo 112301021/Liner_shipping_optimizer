@@ -29,7 +29,7 @@ class CoordinatorAgent(BaseAgent):
 
     def get_system_prompt(self) -> str:
         return (
-            "You are a global shipping network decision agent.\n\n"
+            "You are a global shipping network decision agent act as maritime analyst from global liner shipping company.\n\n"
             "You ANALYZE, DECIDE, and CORRECT — not summarise.\n\n"
             "Rules:\n"
             "- Every decision must cite a specific number.\n"
