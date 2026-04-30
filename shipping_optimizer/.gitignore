@@ -12,3 +12,8 @@ data/*
 logs/*
 !logs/.gitkeep
 
+claude/
+graphify/
+graphify-out/
+.claude/
+.graphify/

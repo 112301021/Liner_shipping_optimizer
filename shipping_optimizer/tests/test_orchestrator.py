@@ -4,16 +4,16 @@ Full integration test for the multi-agent liner shipping optimization pipeline.
 
 Pipeline under test:
   OrchestratorAgent
-    → PortClustering + RegionalSplitter  (problem decomposition)
-    → RegionalAgent × 3  (Asia / Europe / Americas)
-        → ServiceGeneratorAgent           (candidate service pool)
-        → HierarchicalGA                  (service selection)
-        → HubMILP × N clusters            (flow optimisation)
-        → LLM strategy + explanation      (qualitative analysis)
-    → CoordinatorAgent                   (conflict detection + resolution)
-    → Feedback loop (up to 3 iterations) (coverage/profit gap correction)
-    → aggregate_results                   (global roll-up)
-    → LLM executive summary              (orchestrator synthesis)
+    -> PortClustering + RegionalSplitter  (problem decomposition)
+    -> RegionalAgent × 3  (Asia / Europe / Americas)
+        -> ServiceGeneratorAgent           (candidate service pool)
+        -> HierarchicalGA                  (service selection)
+        -> HubMILP × N clusters            (flow optimisation)
+        -> LLM strategy + explanation      (qualitative analysis)
+    -> CoordinatorAgent                   (conflict detection + resolution)
+    -> Feedback loop (up to 3 iterations) (coverage/profit gap correction)
+    -> aggregate_results                   (global roll-up)
+    -> LLM executive summary              (orchestrator synthesis)
 
 New sections (v2):
     Section 8 — Feedback loop audit
@@ -31,7 +31,7 @@ import re
 from pathlib import Path
 from typing import Dict, Any, List
 
-# ── Path setup ─────────────────────────────────────────────────────────────
+# -- Path setup -------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.network_loader import NetworkLoader
@@ -52,11 +52,11 @@ class C:
     BLUE   = "\033[94m"
     DIM    = "\033[2m"
 
-def ok(msg: str)   -> str: return f"{C.GREEN}✓{C.RESET}  {msg}"
-def fail(msg: str) -> str: return f"{C.RED}✗{C.RESET}  {msg}"
-def warn(msg: str) -> str: return f"{C.YELLOW}⚠{C.RESET}  {msg}"
+def ok(msg: str)   -> str: return f"{C.GREEN}+{C.RESET}  {msg}"
+def fail(msg: str) -> str: return f"{C.RED}-{C.RESET}  {msg}"
+def warn(msg: str) -> str: return f"{C.YELLOW}!{C.RESET}  {msg}"
 def hdr(msg: str)  -> str: return f"\n{C.BOLD}{C.CYAN}{msg}{C.RESET}"
-def sep(char="─", n=70) -> str: return char * n
+def sep(char="-", n=70) -> str: return char * n
 
 
 # ===========================================================================
@@ -255,7 +255,7 @@ def section_regional_results(result: Dict, stats: Dict):
 
     assert_ge(len(regional_results), 1, f"At least 1 regional agent returned a result")
 
-    # ── Per-region table ─────────────────────────────────────────────────────
+    # -- Per-region table -----------------------------------------------------
     cols   = ["Region", "Services", "Profit/wk", "Coverage", "Cost/wk",
               "Margin%", "$/svc/wk", "Uncov TEU"]
     widths = [12, 10, 14, 10, 14, 8, 10, 12]
@@ -290,7 +290,7 @@ def section_regional_results(result: Dict, stats: Dict):
 
     print(f"  {sep()}")
 
-    # ── Per-region assertions ────────────────────────────────────────────────
+    # -- Per-region assertions ------------------------------------------------
     for r in regional_results:
         region = r.get("region", "?")
         profit = r.get("weekly_profit", 0)
@@ -299,21 +299,21 @@ def section_regional_results(result: Dict, stats: Dict):
         cost   = r.get("operating_cost", 0)
         annual = r.get("annual_profit", profit * 52)
 
-        print(f"\n  {C.BOLD}── {region} ──{C.RESET}")
+        print(f"\n  {C.BOLD}-- {region} --{C.RESET}")
 
         assert_gt(profit, 0, f"[{region}] Weekly profit > 0")
         assert_gt(svcs,   0, f"[{region}] Services selected > 0")
         assert_range(cov, 0, 100, f"[{region}] Coverage in [0, 100]%")
         assert_true(
             abs(annual - profit * 52) < profit * 0.01 + 1,
-            f"[{region}] Annual profit ≈ weekly × 52",
+            f"[{region}] Annual profit ~= weekly × 52",
             f"annual={annual:,.0f}  weekly×52={profit*52:,.0f}",
         )
         warn_if(cov < 10, f"[{region}] Coverage {cov:.1f}% is very low (<10%)")
         warn_if(cov > 80, f"[{region}] Coverage {cov:.1f}% is unusually high (>80%)")
         warn_if(svcs == 0, f"[{region}] No services selected — GA may have failed")
 
-        # ── Strategy output quality ────────────────────────────────────
+        # -- Strategy output quality ------------------------------------
         strategy = r.get("strategy", "")
         print(f"\n  {C.DIM}Strategy output:{C.RESET}")
         # Indent each line
@@ -335,7 +335,7 @@ def section_regional_results(result: Dict, stats: Dict):
         has_vague = any(v in strategy.lower() for v in vague)
         assert_true(not has_vague, f"[{region}] Strategy avoids vague language")
 
-        # ── Explanation output quality ─────────────────────────────────
+        # -- Explanation output quality ---------------------------------
         explanation = r.get("explanation", "")
         print(f"\n  {C.DIM}Explanation output:{C.RESET}")
         for line in explanation.strip().splitlines():
@@ -355,7 +355,7 @@ def section_regional_results(result: Dict, stats: Dict):
         has_vague_exp = any(v in explanation.lower() for v in vague)
         assert_true(not has_vague_exp, f"[{region}] Explanation avoids vague language")
 
-        # ── New fields added by hardened agent ─────────────────────────
+        # -- New fields added by hardened agent -------------------------
         print(f"\n  {C.DIM}Hardened-agent fields:{C.RESET}")
         for field, label in [
             ("profit_margin_pct",  "Profit margin %"),
@@ -524,7 +524,7 @@ def section_pipeline_integrity(result: Dict, regional_results: List[Dict], stats
             f"[{region}] Service funnel: selected({sel}) <= filtered({flt})",
         )
 
-    # Profit cross-check: sum of regional profits ≈ global total (within 1%)
+    # Profit cross-check: sum of regional profits ~= global total (within 1%)
     metrics = result["summary_metrics"]
     regional_profit_sum = sum(r.get("weekly_profit", 0) for r in regional_results)
     global_profit       = float(metrics["weekly_profit"])
@@ -532,7 +532,7 @@ def section_pipeline_integrity(result: Dict, regional_results: List[Dict], stats
         deviation = abs(regional_profit_sum - global_profit) / global_profit
         assert_true(
             deviation < 0.02,
-            "Regional profit sum ≈ global total (within 2%)",
+            "Regional profit sum ~= global total (within 2%)",
             f"Regional sum=${regional_profit_sum:,.0f}  Global=${global_profit:,.0f}  "
             f"deviation={deviation*100:.1f}%",
         )
@@ -598,7 +598,7 @@ def section_feedback_loop(result: Dict):
 
     print(f"\n  {sep()}")
 
-    # ── Assertions ────────────────────────────────────────────────────────
+    # -- Assertions --------------------------------------------------------
     assert_ge(iterations_run, 1, "At least 1 iteration ran")
     assert_true(len(audit) == iterations_run, "Audit entries match iterations_run")
 
@@ -621,7 +621,7 @@ def section_feedback_loop(result: Dict):
         total_w = sum(wa.values())
         assert_true(
             abs(total_w - 1.0) < 0.02,
-            f"Feedback weights sum ≈ 1.0 (got {total_w:.3f})",
+            f"Feedback weights sum ~= 1.0 (got {total_w:.3f})",
             f"profit={wa.get('profit_weight'):.3f}, "
             f"coverage={wa.get('coverage_weight'):.3f}, "
             f"cost={wa.get('cost_weight'):.3f}",
@@ -671,7 +671,7 @@ def section_conflict_resolution(result: Dict):
     if conflicts:
         print(f"\n  {C.BOLD}CONFLICTS{C.RESET}")
         for c in conflicts[:10]:
-            print(f"  {C.YELLOW}⚠{C.RESET}  Service {c['service_id']} "
+            print(f"  {C.YELLOW}!{C.RESET}  Service {c['service_id']} "
                   f"overlaps in: {', '.join(c['regions'])}")
 
     if resolution_log:
@@ -693,7 +693,7 @@ def section_conflict_resolution(result: Dict):
     print(f"\n  {sep()}")
     print_kv("Total resolutions (all iterations)", str(len(all_resolutions)))
 
-    # ── Assertions ────────────────────────────────────────────────────────
+    # -- Assertions --------------------------------------------------------
 
     # Resolution log is always a list (even if empty)
     assert_true(isinstance(resolution_log, list), "resolution_log is a list")
@@ -755,18 +755,18 @@ def print_final_summary(stats: Dict, metrics: Dict, regional_results: List[Dict]
     iterations_run = result.get("iterations_run", 1)
 
     print(f"""
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │  {C.BOLD}GLOBAL NETWORK PERFORMANCE{C.RESET}                                        │
-  ├─────────────────────────────────────────────────────────────────────┤
-  │  Services deployed    {total_services:>8,}                                    │
-  │  Weekly profit        ${weekly_profit:>14,.0f}                            │
-  │  Annual profit        ${annual_profit:>14,.0f}                            │
-  │  Operating cost/wk    ${weekly_cost:>14,.0f}                            │
-  │  Profit margin        {profit_margin:>13.1f}%                            │
-  │  Demand coverage      {coverage:>13.1f}%                            │
-  │  Unserved demand      {uncovered_teu:>12,.0f} TEU/wk                     │
-  │  Feedback iterations  {iterations_run:>8,}                                    │
-  └─────────────────────────────────────────────────────────────────────┘""")
+  +-----------------------------------------------------------------------+
+  |  {C.BOLD}GLOBAL NETWORK PERFORMANCE{C.RESET}                                        |
+  +-----------------------------------------------------------------------+
+  |  Services deployed    {total_services:>8,}                                    |
+  |  Weekly profit        ${weekly_profit:>14,.0f}                            |
+  |  Annual profit        ${annual_profit:>14,.0f}                            |
+  |  Operating cost/wk    ${weekly_cost:>14,.0f}                            |
+  |  Profit margin        {profit_margin:>13.1f}%                            |
+  |  Demand coverage      {coverage:>13.1f}%                            |
+  |  Unserved demand      {uncovered_teu:>12,.0f} TEU/wk                     |
+  |  Feedback iterations  {iterations_run:>8,}                                    |
+  +-----------------------------------------------------------------------+""")
 
     print(f"\n  {C.BOLD}REGIONAL BREAKDOWN{C.RESET}")
     print(f"  {'Region':<12}  {'Profit/wk':>14}  {'Coverage':>9}  "
@@ -785,14 +785,14 @@ def print_final_summary(stats: Dict, metrics: Dict, regional_results: List[Dict]
         print(f"  {region:<12}  ${profit:>13,.0f}  {cov:>8.1f}%  "
               f"{svcs:>9,}  {margin:>7.1f}%  [{hub_str}]")
 
-    # ── Iteration trace ────────────────────────────────────────────────────
+    # -- Iteration trace ----------------------------------------------------
     audit = result.get("iteration_audit", [])
     if len(audit) > 1:
         print(f"\n  {C.BOLD}FEEDBACK LOOP TRACE{C.RESET}")
         print(f"  {'Iter':<6} {'Coverage':>10} {'Conv.Score':>12}  Reason")
         print(f"  {sep('-', 60)}")
         for entry in audit:
-            arrow = f"{C.YELLOW}→{C.RESET}" if entry["needs_rerun"] else f"{C.GREEN}✓{C.RESET}"
+            arrow = f"{C.YELLOW}->{C.RESET}" if entry["needs_rerun"] else f"{C.GREEN}+{C.RESET}"
             print(f"  {entry['iteration']:<6} {entry['coverage']:>9.1f}%  "
                   f"{entry['convergence_score']:>12.3f}  {arrow}  "
                   f"{entry['rerun_reason'][:45]}")
@@ -806,10 +806,10 @@ def test_orchestrator():
     global _PASS, _FAIL, _WARN
 
     print(f"\n{C.BOLD}{'=' * 70}{C.RESET}")
-    print(f"{C.BOLD}  LINER SHIPPING OPTIMIZER — FULL PIPELINE TEST {C.RESET}")
+    print(f"{C.BOLD}  LINER SHIPPING OPTIMIZER - FULL PIPELINE TEST {C.RESET}")
     print(f"{C.BOLD}{'=' * 70}{C.RESET}")
 
-    # ── Initialise ─────────────────────────────────────────────────────────
+    # -- Initialise ---------------------------------------------------------
     print(hdr("0 · INITIALISATION"))
     print(f"  {sep()}")
     orchestrator = OrchestratorAgent()
@@ -817,26 +817,26 @@ def test_orchestrator():
     print(ok(f"Regional agents: {[a.name for a in orchestrator.regional_agents]}"))
     print(ok(f"CoordinatorAgent: {orchestrator.coordinator.name}"))
 
-    # ── Load problem ────────────────────────────────────────────────────────
+    # -- Load problem --------------------------------------------------------
     dataset = "data/datasets/large_shipping_problem.json"
     problem = load_problem(dataset)
     print(ok(f"Dataset loaded: {dataset}"))
 
-    # ── Problem statistics ──────────────────────────────────────────────────
+    # -- Problem statistics --------------------------------------------------
     stats = section_problem_stats(problem)
 
-    # ── Run pipeline ────────────────────────────────────────────────────────
+    # -- Run pipeline --------------------------------------------------------
     print_section_header("RUNNING PIPELINE")
     print(f"  {C.DIM}Steps:{C.RESET}")
     for step in [
         "Orchestrator LLM — problem analysis",
-        "PortClustering → RegionalSplitter — decomposition",
+        "PortClustering -> RegionalSplitter — decomposition",
         "RegionalAgent × 3 — GA + MILP + LLM",
         "CoordinatorAgent — conflict detection + resolution + feedback",
         "Feedback loop — up to 3 iterations",
         "Orchestrator LLM — executive summary",
     ]:
-        print(f"  {C.DIM}  → {step}{C.RESET}")
+        print(f"  {C.DIM}  -> {step}{C.RESET}")
 
     print(f"\n  {C.YELLOW}Running... (this may take several minutes){C.RESET}\n")
     t0      = time.perf_counter()
@@ -845,7 +845,7 @@ def test_orchestrator():
     print(f"\n  {ok(f'Pipeline complete in {elapsed:.1f}s')}")
     print(f"  {ok('Iterations run: ' + str(result.get('iterations_run', 1)))}")
 
-    # ── Validate all sections ───────────────────────────────────────────────
+    # -- Validate all sections -----------------------------------------------
     regional_results = result.get("regional_results", [])
 
     section_problem_analysis(result, stats)
@@ -857,10 +857,10 @@ def test_orchestrator():
     section_feedback_loop(result)           # ← NEW
     section_conflict_resolution(result)    # ← NEW
 
-    # ── Final summary ───────────────────────────────────────────────────────
+    # -- Final summary -------------------------------------------------------
     print_final_summary(stats, result["summary_metrics"], regional_results, result)
 
-    # ── Test scorecard ──────────────────────────────────────────────────────
+    # -- Test scorecard ------------------------------------------------------
     print_section_header("TEST SCORECARD")
     total = _PASS + _FAIL
     pct   = _PASS / total * 100 if total else 0
@@ -872,10 +872,10 @@ def test_orchestrator():
     print(f"\n  {sep()}")
 
     if _FAIL == 0:
-        print(f"\n  {C.GREEN}{C.BOLD}✓ ALL ASSERTIONS PASSED{C.RESET}")
+        print(f"\n  {C.GREEN}{C.BOLD}+ ALL ASSERTIONS PASSED{C.RESET}")
         print(f"  {C.GREEN}Pipeline is operating correctly.{C.RESET}")
     else:
-        print(f"\n  {C.RED}{C.BOLD}✗ {_FAIL} ASSERTION(S) FAILED{C.RESET}")
+        print(f"\n  {C.RED}{C.BOLD}- {_FAIL} ASSERTION(S) FAILED{C.RESET}")
         print(f"  {C.RED}Review the FAIL lines above for details.{C.RESET}")
 
     if _WARN:

@@ -1,0 +1,5 @@
+{"time": "2026-04-26 17:05:39.483413+05:30", "level": "INFO", "message": "Starting Claude Code Proxy...", "module": "api.runtime", "function": "startup", "line": 68}
+{"time": "2026-04-26 17:05:39.484189+05:30", "level": "WARNING", "message": "ANTHROPIC_AUTH_TOKEN is set in the process environment but not in a configured .env file. The proxy will require that token. Add ANTHROPIC_AUTH_TOKEN= to .env to disable proxy auth, or set the same token in .env to make server auth explicit.", "module": "api.runtime", "function": "warn_if_process_auth_token", "line": 40}
+{"time": "2026-04-26 17:05:39.562882+05:30", "level": "INFO", "message": "No Discord bot token configured, skipping platform setup", "module": "messaging.platforms.factory", "function": "create_messaging_platform", "line": 72}
+{"time": "2026-04-26 17:07:17.412124+05:30", "level": "INFO", "message": "Shutdown requested, cleaning up...", "module": "api.runtime", "function": "shutdown", "line": 82}
+{"time": "2026-04-26 17:07:17.416689+05:30", "level": "INFO", "message": "Server shut down cleanly", "module": "api.runtime", "function": "shutdown", "line": 92}

@@ -187,7 +187,7 @@ if __name__ == "__main__":
 
     save_problem(problem, output)
 
-    print("✓ Dataset created")
+    print("+ Dataset created")
     print("Ports:", len(problem.ports))
     print("Services:", len(problem.services))
     print("Demands:", len(problem.demands))

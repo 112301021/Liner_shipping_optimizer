@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 from src.llm.evaluator                   import LLMEvaluator
@@ -26,9 +27,11 @@ class OrchestratorAgent(BaseAgent):
         super().__init__(name=name, role="Master Orchestrator", model=model)
         self.evaluator = LLMEvaluator()
         self.regional_agents: List[RegionalAgent] = [
-            RegionalAgent("regional_asia",     "Asia",     Config.REGIONAL_MODEL),
-            RegionalAgent("regional_europe",   "Europe",   Config.REGIONAL_MODEL),
-            RegionalAgent("regional_americas", "Americas", Config.REGIONAL_MODEL),
+            RegionalAgent("regional_asia",        "Asia",        Config.REGIONAL_MODEL),
+            RegionalAgent("regional_europe",      "Europe",      Config.REGIONAL_MODEL),
+            RegionalAgent("regional_americas",    "Americas",    Config.REGIONAL_MODEL),
+            RegionalAgent("regional_middle_east", "Middle East", Config.REGIONAL_MODEL),
+            RegionalAgent("regional_africa",      "Africa",      Config.REGIONAL_MODEL),
         ]
         self.coordinator = CoordinatorAgent()
 
@@ -169,6 +172,9 @@ class OrchestratorAgent(BaseAgent):
             if true_global_demand > 0 else 0.0
         )
 
+        # Validation: ensure coverage is within bounds
+        assert 0 <= coverage <= 100, f"Coverage out of bounds: {coverage}%"
+
         return {
             "weekly_profit":   total_profit,
             "annual_profit":   total_profit * 52,
@@ -257,12 +263,26 @@ class OrchestratorAgent(BaseAgent):
         true_global_demand = sum(d.weekly_teu for d in problem.demands)
         logger.info("true_global_demand_captured", teu=true_global_demand)
 
+        # Determine cluster count based on problem size
+        num_ports = len(problem.ports)
+        n_clusters = 3 if num_ports < 50 else 5
+
+        # Validation: ensure we have enough regional agents
+        assert len(self.regional_agents) >= n_clusters, f"Expected at least {n_clusters} regional agents, got {len(self.regional_agents)}"
+
         analysis = self.analyze_problem(problem)
         logger.info("problem_analysis_complete")
 
         # Decompose
-        clustering = PortClustering(n_clusters=len(self.regional_agents))
+        clustering = PortClustering(n_clusters=n_clusters)
         clusters   = clustering.cluster_ports(problem.ports)
+
+        # Validation: ensure we have correct number of clusters
+        assert len(clusters) == n_clusters, f"Expected {n_clusters} clusters, got {len(clusters)}"
+
+        # Validation: ensure all ports are assigned
+        total_clustered_ports = sum(len(port_ids) for port_ids in clusters.values())
+        assert total_clustered_ports == len(problem.ports), f"Port count mismatch: {total_clustered_ports} vs {len(problem.ports)}"
 
         # ── Feedback / resolution loop ─────────────────────────────────────
         regional_results: List[Dict] = []
@@ -283,12 +303,30 @@ class OrchestratorAgent(BaseAgent):
             regional_problems = splitter.split(clusters)
             regional_results  = []
 
-            for i, agent in enumerate(self.regional_agents):
-                rp = regional_problems.get(i)
-                if rp is None:
-                    continue
-                result = agent.process({"problem": rp})
-                regional_results.append(result)
+            # Validation: ensure demand conservation
+            total_demand_before = sum(d.weekly_teu for d in problem.demands)
+            total_demand_after = sum(
+                sum(d.weekly_teu for d in rp.demands)
+                for rp in regional_problems.values()
+            )
+            assert abs(total_demand_before - total_demand_after) < 1.0, \
+                f"Demand conservation failed: {total_demand_before} vs {total_demand_after}"
+
+            # Parallel execution of regional agents (use only required number)
+            agents_to_use = self.regional_agents[:n_clusters]
+            with ThreadPoolExecutor(max_workers=n_clusters) as executor:
+                futures = []
+                for i, agent in enumerate(agents_to_use):
+                    rp = regional_problems.get(i)
+                    if rp is None:
+                        continue
+                    future = executor.submit(agent.process, {"problem": rp})
+                    futures.append(future)
+
+                # Collect results
+                for future in futures:
+                    result = future.result()
+                    regional_results.append(result)
 
             # Snapshot metrics after this iteration
             iter_profit   = sum(r.get("weekly_profit", 0) for r in regional_results)

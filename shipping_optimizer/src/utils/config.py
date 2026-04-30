@@ -34,6 +34,6 @@ class Config:
         cls.DATA_DIR.mkdir(exist_ok=True)
         cls.LOGS_DIR.mkdir(exist_ok=True)
 
-        print("✓ Configuration validated")
+        print("+ Configuration validated")
 Config.validate()
         

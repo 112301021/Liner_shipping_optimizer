@@ -36,7 +36,21 @@ class PortClustering:
             if np.isnan(p.latitude) or np.isnan(p.longitude):
                 continue
 
-            coords.append([p.latitude, p.longitude])
+            # Check if coordinates might be swapped (lat should be [-90, 90], lon should be [-180, 180])
+            lat = p.latitude
+            lon = p.longitude
+
+            # Fix swapped coordinates
+            if abs(p.latitude) > 90 and abs(p.longitude) <= 90:
+                lat, lon = p.longitude, p.latitude
+            elif abs(p.longitude) > 180 and abs(p.latitude) <= 180:
+                lat, lon = p.longitude, p.latitude
+
+            # Validate ranges
+            if abs(lat) > 90 or abs(lon) > 180:
+                continue
+
+            coords.append([lat, lon])
             valid_ports.append(p)
 
         coords = np.array(coords)
@@ -56,10 +70,22 @@ class PortClustering:
         labels = model.fit_predict(coords)
 
         clusters = {}
+        # Initialize clusters
+        for i in range(n_clusters):
+            clusters[i] = []
 
+        # Assign ports with valid coordinates to clusters
         for i, label in enumerate(labels):
-            clusters.setdefault(label, [])
             clusters[label].append(valid_ports[i].id)
+
+        # Assign ports without valid coordinates to clusters to ensure all ports are included
+        all_valid_port_ids = set(p.id for p in valid_ports)
+        unassigned_ports = [p for p in ports if p.id not in all_valid_port_ids]
+
+        # Distribute unassigned ports evenly across clusters
+        for i, port in enumerate(unassigned_ports):
+            cluster_idx = i % n_clusters
+            clusters[cluster_idx].append(port.id)
 
         return clusters
 
