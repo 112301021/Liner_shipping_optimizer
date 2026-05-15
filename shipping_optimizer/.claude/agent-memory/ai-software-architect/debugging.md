@@ -105,9 +105,48 @@ Mark the step where the failure first occurs — that is the localization point.
 
 ---
 
+## BUG REGISTRY
+
+### BUG-001: Mutable Problem State Corruption
+ID: BUG-001
+Title: Problem object mutated causing iteration inconsistency
+File: src/agents/orchestrator_agent.py, Line: 268
+Error Type: State corruption
+Symptom: Different results on same input across iterations
+Root Cause: Direct mutation of shared problem object during feedback
+Fix Applied: None - needs immutable snapshot pattern
+Recurrence Risk: High
+Status: OPEN
+Date: 2026-05-15
+
+### BUG-002: Distance Matrix KeyError
+ID: BUG-002
+Title: Missing bidirectional distance entries
+File: src/data/network_loader.py, Line: 111
+Error Type: KeyError
+Symptom: Runtime crash when accessing missing port distance
+Root Cause: Distance matrix not fully populated
+Fix Applied: Added setdefault fallback
+Recurrence Risk: Low
+Status: FIXED
+Date: 2026-05-15
+
+### BUG-003: WebSocket Event Schema Mismatch
+ID: BUG-003
+Title: Events sent as dicts instead of validated objects
+File: backend/main.py vs backend/real_orchestrator_integration.py
+Error Type: ValidationError
+Symptom: Frontend fails to parse WebSocket events
+Root Cause: Inconsistent event creation patterns
+Fix Applied: None - requires standardization
+Recurrence Risk: High
+Status: OPEN
+Date: 2026-05-15
+
+---
+
 ## LESSONS LEARNED
 
-<!-- Add after resolving non-obvious bugs -->
 | Lesson | Context | Date |
 |--------|---------|------|
 | WebSocket endpoint mismatches break real-time features | Frontend expects `/ws/pipeline` but backend provides `/ws` | 2026-05-09 |
@@ -115,4 +154,7 @@ Mark the step where the failure first occurs — that is the localization point.
 | Mock data in production breaks data flow integrity | PipelineStreamer uses MockProblem instead of real loader | 2026-05-09 |
 | Event naming inconsistency prevents handler execution | `pipeline_complete` vs `pipeline_completed` | 2026-05-09 |
 | Missing file handling causes system crashes | server.py line 316 lacks try/catch for file not found | 2026-05-09 |
+| Mutable shared state causes hard-to-debug issues | Problem object mutated across iterations leads to inconsistency | 2026-05-15 |
+| Distance matrices must be fully bidirectional | Missing reverse distances cause runtime crashes | 2026-05-15 |
+| O(n²) operations in hot paths kill performance | Distance lookups without caching bottleneck MILP solves | 2026-05-15 |
 

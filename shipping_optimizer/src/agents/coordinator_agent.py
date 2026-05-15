@@ -282,8 +282,8 @@ class CoordinatorAgent(BaseAgent):
             )
 
         status = (
-            "good"     if score >= 4 else
-            "moderate" if score >= 2 else
+            "good"     if 5 >= score >= 3 else
+            "moderate" if score == 2.5 else
             "poor"
         )
 

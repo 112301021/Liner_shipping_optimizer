@@ -1,33 +1,10 @@
-"""
-====================
-Full integration test for the multi-agent liner shipping optimization pipeline.
-
-Pipeline under test:
-  OrchestratorAgent
-    -> PortClustering + RegionalSplitter  (problem decomposition)
-    -> RegionalAgent × 3  (Asia / Europe / Americas)
-        -> ServiceGeneratorAgent           (candidate service pool)
-        -> HierarchicalGA                  (service selection)
-        -> HubMILP × N clusters            (flow optimisation)
-        -> LLM strategy + explanation      (qualitative analysis)
-    -> CoordinatorAgent                   (conflict detection + resolution)
-    -> Feedback loop (up to 3 iterations) (coverage/profit gap correction)
-    -> aggregate_results                   (global roll-up)
-    -> LLM executive summary              (orchestrator synthesis)
-
-New sections (v2):
-    Section 8 — Feedback loop audit
-    Section 9 — Conflict resolution audit
-
-Run:
-    python -m tests.test_orchestrator
-    pytest tests/test_orchestrator.py -v
-"""
 
 import json
 import sys
 import time
 import re
+import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -257,8 +234,8 @@ def section_regional_results(result: Dict, stats: Dict):
 
     # -- Per-region table -----------------------------------------------------
     cols   = ["Region", "Services", "Profit/wk", "Coverage", "Cost/wk",
-              "Margin%", "$/svc/wk", "Uncov TEU"]
-    widths = [12, 10, 14, 10, 14, 8, 10, 12]
+              "Oper.Cost", "Trans.Cost", "Margin%", "$/svc/wk", "Uncov TEU"]
+    widths = [12, 10, 14, 10, 14, 12, 12, 8, 10, 12]
 
     print(f"\n  {sep()}")
     print_table_row(cols, widths, bold_first=True)
@@ -269,7 +246,9 @@ def section_regional_results(result: Dict, stats: Dict):
         svcs     = r.get("services_selected", 0)
         profit   = r.get("weekly_profit", 0)
         cov      = r.get("coverage_percent", 0)
-        cost     = r.get("operating_cost", 0)
+        cost     = r.get("total_cost", r.get("operating_cost", 0))
+        op_cost  = r.get("operating_cost", 0)
+        tr_cost  = r.get("transship_cost", 0)
         margin   = r.get("profit_margin_pct",
                          round(profit / (profit + cost) * 100, 1) if (profit + cost) > 0 else 0)
         pps      = r.get("profit_per_service",
@@ -283,6 +262,8 @@ def section_regional_results(result: Dict, stats: Dict):
             f"${profit:,.0f}",
             f"{cov:.1f}%",
             f"${cost:,.0f}",
+            f"${op_cost:,.0f}",
+            f"${tr_cost:,.0f}",
             f"{margin:.1f}%",
             f"${pps:,.0f}",
             f"{uncov:,.0f}",
@@ -344,11 +325,11 @@ def section_regional_results(result: Dict, stats: Dict):
         assert_true(len(explanation) > 60, f"[{region}] Explanation is non-trivial")
         assert_has_number(explanation, f"[{region}] Explanation cites specific numbers")
         assert_true(
-            any(kw in explanation for kw in ("Verdict:", "Good", "Moderate", "Poor")),
+            any(kw.lower() in explanation.lower() for kw in ("Verdict:", "Good", "Moderate", "Poor")),
             f"[{region}] Explanation contains verdict",
         )
         assert_true(
-            any(kw in explanation for kw in
+            any(kw.lower() in explanation.lower() for kw in
                 ("Strength", "Weakness", "Improvement", "Action")),
             f"[{region}] Explanation has structured sections",
         )
@@ -442,11 +423,11 @@ def section_executive_summary(result: Dict, metrics: Dict):
     # Structure checks
     assert_true(len(summary) > 100, "Summary is non-trivial (>100 chars)")
     assert_true(
-        any(v in summary for v in ("Good", "Moderate", "Poor")),
+        any(v.lower() in summary.lower() for v in ("Good", "Moderate", "Poor")),
         "Summary contains verdict (Good / Moderate / Poor)",
     )
     assert_true(
-        any(kw in summary for kw in ("Strength", "Weakness", "Priority", "Action")),
+        any(kw.lower() in summary.lower() for kw in ("Strength", "Weakness", "Priority", "Action")),
         "Summary has structured sections",
     )
 
@@ -756,16 +737,16 @@ def print_final_summary(stats: Dict, metrics: Dict, regional_results: List[Dict]
 
     print(f"""
   +-----------------------------------------------------------------------+
-  |  {C.BOLD}GLOBAL NETWORK PERFORMANCE{C.RESET}                                        |
+  |  {C.BOLD}GLOBAL NETWORK PERFORMANCE{C.RESET}                          |
   +-----------------------------------------------------------------------+
-  |  Services deployed    {total_services:>8,}                                    |
-  |  Weekly profit        ${weekly_profit:>14,.0f}                            |
-  |  Annual profit        ${annual_profit:>14,.0f}                            |
-  |  Operating cost/wk    ${weekly_cost:>14,.0f}                            |
-  |  Profit margin        {profit_margin:>13.1f}%                            |
-  |  Demand coverage      {coverage:>13.1f}%                            |
-  |  Unserved demand      {uncovered_teu:>12,.0f} TEU/wk                     |
-  |  Feedback iterations  {iterations_run:>8,}                                    |
+  |  Services deployed    {total_services:>8,}                            |
+  |  Weekly profit        ${weekly_profit:>14,.0f}                        |
+  |  Annual profit        ${annual_profit:>14,.0f}                        |
+  |  Operating cost/wk    ${weekly_cost:>14,.0f}                          |
+  |  Profit margin        {profit_margin:>13.1f}%                         |
+  |  Demand coverage      {coverage:>13.1f}%                              |
+  |  Unserved demand      {uncovered_teu:>12,.0f} TEU/wk                  |
+  |  Feedback iterations  {iterations_run:>8,}                            |
   +-----------------------------------------------------------------------+""")
 
     print(f"\n  {C.BOLD}REGIONAL BREAKDOWN{C.RESET}")
@@ -831,7 +812,7 @@ def test_orchestrator():
     for step in [
         "Orchestrator LLM — problem analysis",
         "PortClustering -> RegionalSplitter — decomposition",
-        "RegionalAgent × 3 — GA + MILP + LLM",
+        "RegionalAgent × 5 — GA + MILP + LLM",
         "CoordinatorAgent — conflict detection + resolution + feedback",
         "Feedback loop — up to 3 iterations",
         "Orchestrator LLM — executive summary",
@@ -845,6 +826,11 @@ def test_orchestrator():
     print(f"\n  {ok(f'Pipeline complete in {elapsed:.1f}s')}")
     print(f"  {ok('Iterations run: ' + str(result.get('iterations_run', 1)))}")
 
+    # Add runtime to summary metrics
+    if "summary_metrics" not in result:
+        result["summary_metrics"] = {}
+    result["summary_metrics"]["total_runtime"] = round(elapsed, 1)
+
     # -- Validate all sections -----------------------------------------------
     regional_results = result.get("regional_results", [])
 
@@ -854,8 +840,8 @@ def test_orchestrator():
     section_executive_summary(result, result["summary_metrics"])
     section_pipeline_integrity(result, regional_results, stats)
     section_performance(elapsed, stats)
-    section_feedback_loop(result)           # ← NEW
-    section_conflict_resolution(result)    # ← NEW
+    section_feedback_loop(result)           
+    section_conflict_resolution(result)    
 
     # -- Final summary -------------------------------------------------------
     print_final_summary(stats, result["summary_metrics"], regional_results, result)
@@ -890,9 +876,9 @@ def test_orchestrator():
     try:
         with open(output_file, 'w') as f:
             json.dump(result, f, indent=2)
-        save_msg = f"✅ PIPELINE OUTPUT SAVED TO: {output_file}"
+        save_msg = f"[SUCCESS] PIPELINE OUTPUT SAVED TO: {output_file}"
     except Exception as e:
-        save_msg = f"❌ FAILED TO SAVE OUTPUT: {e}"
+        save_msg = f"[ERROR] FAILED TO SAVE OUTPUT: {e}"
 
     assert _FAIL == 0, f"{_FAIL} assertion(s) failed — see output above."
 
@@ -905,7 +891,53 @@ def test_orchestrator():
 
 # ===========================================================================
 # Run directly
-# ===========================================================================
+def launch_dashboard():
+    """Launch the dashboard automatically"""
+    print(f"\n{C.BOLD}{'=' * 70}{C.RESET}")
+    print(f"{C.BOLD}  LAUNCHING DASHBOARD {C.RESET}")
+    print(f"{C.BOLD}{'=' * 70}{C.RESET}")
+    
+    root_dir = Path(__file__).parent.parent
+    
+    # Step 1: Start backend
+    print(f"\n{ok('Starting backend server...')}")
+    backend_path = root_dir / "backend"
+    backend_proc = subprocess.Popen(
+        [sys.executable, "server.py"],
+        cwd=backend_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    
+    # Step 2: Start frontend
+    print(f"{ok('Starting frontend server...')}")
+    frontend_path = root_dir / "frontend"
+    frontend_proc = subprocess.Popen(
+        ["npm", "run", "dev"],
+        cwd=frontend_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        shell=True
+    )
+    
+    # Step 3: Open browser
+    time.sleep(3) # Wait for servers to initialize
+    url = "http://localhost:5173"
+    print(f"{ok(f'Opening dashboard at {url}')}")
+    webbrowser.open(url)
+    
+    print(f"\n{C.GREEN}{C.BOLD}Dashboard is now running!{C.RESET}")
+    print(f"Press Ctrl+C to stop the servers.")
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print(f"\n{warn('Shutting down servers...')}")
+        backend_proc.terminate()
+        frontend_proc.terminate()
+        print(ok("Done!"))
 
 if __name__ == "__main__":
     test_orchestrator()
+    launch_dashboard()

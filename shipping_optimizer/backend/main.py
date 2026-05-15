@@ -184,24 +184,18 @@ class OrchestratorCallbacks:
         conn.commit()
         conn.close()
 
-        await self.ws_manager.broadcast({
-            "type": "pipeline_started",
-            "data": {
-                "run_id": self.current_run_id,
-                "timestamp": datetime.now().isoformat(),
-                "config": config
-            }
+        await self.ws_manager.broadcast("pipeline_started", {
+            "run_id": self.current_run_id,
+            "timestamp": datetime.now().isoformat(),
+            "config": config
         })
 
     async def on_stage_start(self, stage_name: str, stage_data: Dict[str, Any]):
         """Called when a pipeline stage starts"""
-        await self.ws_manager.broadcast({
-            "type": "stage_started",
-            "data": {
-                "stage": stage_name,
-                "stage_data": stage_data,
-                "timestamp": datetime.now().isoformat()
-            }
+        await self.ws_manager.broadcast("stage_started", {
+            "stage": stage_name,
+            "stage_data": stage_data,
+            "timestamp": datetime.now().isoformat()
         })
 
     async def on_region_update(self, region_id: str, region_data: Dict[str, Any]):
@@ -224,13 +218,10 @@ class OrchestratorCallbacks:
             conn.commit()
             conn.close()
 
-        await self.ws_manager.broadcast({
-            "type": "region_updated",
-            "data": {
-                "region_id": region_id,
-                "region_data": region_data,
-                "timestamp": datetime.now().isoformat()
-            }
+        await self.ws_manager.broadcast("region_updated", {
+            "region_id": region_id,
+            "region_data": region_data,
+            "timestamp": datetime.now().isoformat()
         })
 
     async def on_iteration_complete(self, iteration: int, iteration_data: Dict[str, Any]):
@@ -253,13 +244,10 @@ class OrchestratorCallbacks:
             conn.commit()
             conn.close()
 
-        await self.ws_manager.broadcast({
-            "type": "iteration_updated",
-            "data": {
-                "iteration": iteration,
-                "iteration_data": iteration_data,
-                "timestamp": datetime.now().isoformat()
-            }
+        await self.ws_manager.broadcast("iteration_completed", {
+            "iteration": iteration,
+            "iteration_data": iteration_data,
+            "timestamp": datetime.now().isoformat()
         })
 
     async def on_map_update(self, corridors: List[Dict[str, Any]]):
@@ -282,12 +270,9 @@ class OrchestratorCallbacks:
             conn.commit()
             conn.close()
 
-        await self.ws_manager.broadcast({
-            "type": "map_updated",
-            "data": {
-                "corridors": corridors,
-                "timestamp": datetime.now().isoformat()
-            }
+        await self.ws_manager.broadcast("map_updated", {
+            "corridors": corridors,
+            "timestamp": datetime.now().isoformat()
         })
 
     async def on_pipeline_complete(self, results: Dict[str, Any]):
@@ -309,13 +294,10 @@ class OrchestratorCallbacks:
             conn.commit()
             conn.close()
 
-        await self.ws_manager.broadcast({
-            "type": "pipeline_completed",
-            "data": {
-                "run_id": self.current_run_id,
-                "results": results,
-                "timestamp": datetime.now().isoformat()
-            }
+        await self.ws_manager.broadcast("pipeline_completed", {
+            "run_id": self.current_run_id,
+            "results": results,
+            "timestamp": datetime.now().isoformat()
         })
 
     async def on_error(self, error: str, context: Dict[str, Any] = None):
@@ -332,13 +314,10 @@ class OrchestratorCallbacks:
             conn.commit()
             conn.close()
 
-        await self.ws_manager.broadcast({
-            "type": "pipeline_error",
-            "data": {
-                "error": error,
-                "context": context or {},
-                "timestamp": datetime.now().isoformat()
-            }
+        await self.ws_manager.broadcast("pipeline_error", {
+            "error": error,
+            "context": context or {},
+            "timestamp": datetime.now().isoformat()
         })
 
 # ============================================================================
@@ -422,12 +401,9 @@ async def run_real_optimization(config: Dict[str, Any]):
         current_run_state["status"] = "error"
 
         # Broadcast error
-        await websocket_manager.broadcast({
-            "type": "pipeline_error",
-            "data": {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
+        await websocket_manager.broadcast("pipeline_error", {
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         })
 
 # ============================================================================
@@ -469,10 +445,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif event.type == "stop_pipeline":
                     # Handle stop request
                     current_run_state["status"] = "stopping"
-                    stop_event = EventValidator.create_event("pipeline_stopped", {
+                    await websocket_manager.broadcast("pipeline_stopped", {
                         "reason": "User requested stop"
                     })
-                    await websocket_manager.broadcast(EventValidator.to_json(stop_event))
 
             except ValueError as e:
                 # Send error response for invalid events

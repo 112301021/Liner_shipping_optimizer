@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useRef, useCallback } from 'react';
-import { apiClient } from '../api/apiClient';
+import { apiClient } from '../api/apiClient.js';
 
 export interface UseWebSocketOptions {
   autoConnect?: boolean;

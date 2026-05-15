@@ -8,7 +8,7 @@ import { motion } from 'framer-motion';
 import LiveKPICards from './LiveKPICards';
 import LivePipelineGraph from './LivePipelineGraph';
 import LiveRegionalCards from './LiveRegionalCards';
-import { useWebSocket } from '../../hooks/useWebSocket';
+import { useWebSocket } from '../../hooks/useWebSocket.js';
 import { usePipelineStatus } from '../../hooks/useApiData';
 import useDashboardStore from '../../store/dashboardStore';
 

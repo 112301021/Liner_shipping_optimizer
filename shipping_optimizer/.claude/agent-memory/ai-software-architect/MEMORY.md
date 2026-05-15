@@ -44,12 +44,12 @@ Always trace issues through this full chain. Never analyze a single file in isol
 
 ## KNOWN ARCHITECTURAL RISKS (update as confirmed)
 
-- [ ] `DeploymentOptimizer` suspected to exceed 800 lines — check for SRP violation
-- [ ] `data_loader` may lack try/except on file read — crash risk on missing files
-- [ ] Distance calculations may be recomputed without caching — O(n²) risk
-- [ ] Naming inconsistency suspected: `region` vs `area` across agents
+- [x] `DeploymentOptimizer` suspected to exceed 800 lines — NOT FOUND (actual: HubMILP 300+ lines)
+- [x] `data_loader` may lack try/except on file read — CONFIRMED (missing file handling)
+- [x] Distance calculations may be recomputed without caching — CONFIRMED (O(n²) in hub_milp.py)
+- [x] Naming inconsistency suspected: `region` vs `area` across agents — RESOLVED (consistent naming)
 
-> Move confirmed issues to `patterns.md` once verified in code.
+> Confirmed issues moved to `patterns.md`.
 
 ---
 
@@ -90,6 +90,9 @@ Always trace issues through this full chain. Never analyze a single file in isol
 
 <!-- Agent: append a one-line summary after each session -->
 <!-- Format: [YYYY-MM-DD] Brief description of what was analyzed and key finding -->
+[2026-05-15] Complete architectural audit: Created SYSTEM_ARCHITECTURE_ANALYSIS.md with full pipeline, bottlenecks, and production risks
+[2026-05-15] Confirmed critical bottlenecks: O(n²) distance lookups, mutable problem state, synchronous regional execution
+[2026-05-15] Identified production scalability issues: Single-threaded execution, no horizontal scaling, WebSocket not production-ready
 [2026-05-09] Complete end-to-end architectural audit: Found functional AI pipeline but broken real-time dashboard integration due to WebSocket mismatches and mock data usage
 [2026-05-09] Identified critical frontend disconnect: maritime_dashboard.jsx uses hardcoded DATA, no WebSocket client implemented
 [2026-05-09] Discovered event schema inconsistency: main.py validates events via EventValidator but real_orchestrator_integration.py sends raw dicts

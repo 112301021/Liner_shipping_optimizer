@@ -1,11 +1,5 @@
 """
-regional_splitter.py — Fixed v2
 ================================
-KEY FIX: Each OD demand is assigned to EXACTLY ONE region: the region that
-contains its ORIGIN port.  The previous `origin OR destination` logic caused
-the same demand to appear in 2–3 regions simultaneously, silently inflating
-satisfied_demand, revenue, and coverage metrics by 2–3×.
-
 Cross-region demands (origin in region A, destination in region B):
   - Assigned to origin's region (Option A from spec).
   - MILP in that region will model them as unserved if no direct or
@@ -29,12 +23,6 @@ class RegionalSplitter:
     # Build a single region's sub-problem
     # ------------------------------------------------------------------
     def build_region(self, port_ids: List[int]):
-        """
-        Build a regional sub-problem.
-
-        Demand rule (NO DUPLICATION):
-            A demand OD is included iff d.origin is in this region's port set.
-        """
         port_set = set(port_ids)
 
         # ── Ports ──────────────────────────────────────────────────────
@@ -66,13 +54,6 @@ class RegionalSplitter:
     # Split global problem into regional problems (zero duplication)
     # ------------------------------------------------------------------
     def split(self, clusters: Dict[int, List[int]]) -> Dict[int, object]:
-        """
-        Split the global problem into one sub-problem per cluster.
-
-        Demand partitioning is strictly origin-based so each demand OD
-        appears in exactly one region.  The validation assert will catch
-        any regression to the old OR-based logic.
-        """
         # Build forward map: port_id → cluster_id
         port_to_cluster: Dict[int, int] = {}
         for cluster_id, port_ids in clusters.items():

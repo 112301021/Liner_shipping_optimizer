@@ -3,8 +3,8 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { apiClient } from '../api/client';
-import useDashboardStore from '../store/dashboardStore';
+import { apiClient } from '../api/client.js';
+import useDashboardStore from '../store/dashboardStore.js';
 
 // Hook for fetching metrics
 export const useMetrics = (autoRefresh = true) => {

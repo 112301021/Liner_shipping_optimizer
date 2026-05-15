@@ -6,7 +6,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { useRegions } from '../../hooks/useApiData';
-import useDashboardStore from '../../store/dashboardStore';
+import useDashboardStore from '../../store/dashboardStore.js';
 
 const formatCurrency = (value) => {
   if (value >= 1e9) {

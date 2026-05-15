@@ -4,12 +4,9 @@
  */
 
 import React from 'react';
-import { useOptimizationState } from '../hooks/useOptimizationState';
 import MaritimeDashboard from '../../maritime_dashboard.jsx';
 
 export default function Dashboard() {
-  const optimizationState = useOptimizationState();
-
-  // The maritime dashboard will use the optimization state through its own hook
+  // MaritimeDashboard handles its own WebSocket connections and state management
   return <MaritimeDashboard />;
 }

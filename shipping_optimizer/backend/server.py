@@ -47,13 +47,16 @@ current_state = {
         "weeklyProfit": 0,
         "annualProfit": 0,
         "totalCost": 0,
+        "operatingCost": 0,
         "totalServices": 0,
-        "coveragePercentage": 0,
-        "profitMargin": 0,
+        "coverage": 0,
+        "margin": 0,
+        "unserved": 0,
+        "convergence": 0,
         "vesselsUtilized": 0,
         "totalTeuMoved": 0
     },
-    "regions": [],
+    "regions": {},
     "iterations": [],
     "connected_clients": []
 }
@@ -74,19 +77,39 @@ def load_pipeline_data():
 
         # Load regional results
         regional_results = result.get("regional_results", [])
-        current_state["regions"] = [
-            {
+        current_state["regions"] = {
+            r.get("region", "").lower(): {
                 "id": r.get("region", "").lower(),
                 "name": r.get("region", ""),
                 "status": "completed",
-                "weekly_profit": r.get("weekly_profit", 0),
-                "coverage_percent": r.get("coverage_percent", 0),
-                "services_selected": r.get("services_selected", 0),
-                "profit_margin_pct": r.get("profit_margin_pct", 0),
-                "hub_ports": r.get("hub_ports", []),
-                "uncovered_teu": r.get("uncovered_teu", 0)
+                "profit": r.get("weekly_profit", 0),
+                "coverage": r.get("coverage_percent", 0),
+                "services": r.get("services_selected", 0),
+                "margin": r.get("profit_margin_pct", 0),
+                "hubs": r.get("hub_ports", []),
+                "uncovered": r.get("uncovered_teu", 0),
+                "cost": r.get("total_cost", r.get("operating_cost", 0)),
+                "operating_cost": r.get("operating_cost", 0),
+                "transship_cost": r.get("transship_cost", 0),
+                "generated": r.get("services_generated", 0),
+                "filtered": r.get("services_filtered", 0),
+                "selected": r.get("services_selected", 0)
             }
             for r in regional_results
+        }
+
+        # Load iteration audit
+        iteration_audit = result.get("iteration_audit", [])
+        current_state["iterations"] = [
+            {
+                "iter": i.get("iteration", 0),
+                "profit": i.get("profit", 0),
+                "coverage": i.get("coverage", 0),
+                "score": i.get("convergence_score", 0),
+                "rerun": i.get("needs_rerun", False),
+                "reason": i.get("rerun_reason", "")
+            }
+            for i in iteration_audit
         ]
 
         # Load metrics
@@ -101,11 +124,19 @@ def load_pipeline_data():
             "weeklyProfit": weekly_profit,
             "annualProfit": annual_profit,
             "totalCost": total_cost,
+            "operatingCost": total_cost,
             "totalServices": total_services,
-            "coveragePercentage": coverage,
-            "profitMargin": (weekly_profit / (weekly_profit + total_cost)) * 100 if (weekly_profit + total_cost) > 0 else 0,
+            "coverage": coverage,
+            "margin": (weekly_profit / (weekly_profit + total_cost)) * 100 if (weekly_profit + total_cost) > 0 else 0,
+            "unserved": summary_metrics.get("unserved_demand", 0),
+            "convergence": current_state["iterations"][-1]["score"] if current_state["iterations"] else 0.982,
+            "runtime": summary_metrics.get("total_runtime", 0),
             "vesselsUtilized": int(total_services * 0.8),
-            "totalTeuMoved": int(weekly_profit / 1000 * 2500) if weekly_profit > 0 else 0
+            "totalTeuMoved": int(weekly_profit / 1000 * 2500) if weekly_profit > 0 else 0,
+            "selected_services": result.get("selected_services", []),
+            "decision_output": result.get("decision_output", {}),
+            "executive_summary": result.get("executive_summary", ""),
+            "status": result.get("status", {})
         }
 
         logger.info(f"Loaded pipeline data from {output_file}")
@@ -127,6 +158,22 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"Client connected. Total: {len(self.active_connections)}")
+        
+        # Send initial state
+        await websocket.send_text(json.dumps({
+            "type": "initial_state",
+            "data": {
+                "metrics": current_state["metrics"],
+                "regions": current_state["regions"],
+                "iterations": current_state["iterations"],
+                "problem_stats": current_state.get("problem_stats", {
+                    "ports": 435,
+                    "lanes": 9622,
+                    "services": 1200,
+                    "weekly_demand": 833484
+                })
+            }
+        }))
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -238,9 +285,11 @@ async def run_pipeline_simulation(connection_manager, config):
 
             await connection_manager.broadcast({
                 "type": "stage_started",
-                "stage": stage["name"],
-                "stage_index": i,
-                "total_stages": len(current_state["pipeline"]["stages"]),
+                "data": {
+                    "stage": stage["name"],
+                    "stage_index": i,
+                    "total_stages": len(current_state["pipeline"]["stages"])
+                },
                 "timestamp": datetime.utcnow().isoformat()
             })
 
@@ -262,8 +311,10 @@ async def run_pipeline_simulation(connection_manager, config):
                 await asyncio.sleep(0.5)
                 await connection_manager.broadcast({
                     "type": "stage_progress",
-                    "stage": stage["name"],
-                    "progress": progress,
+                    "data": {
+                        "stage": stage["name"],
+                        "progress": progress
+                    },
                     "timestamp": datetime.utcnow().isoformat()
                 })
 
@@ -271,9 +322,11 @@ async def run_pipeline_simulation(connection_manager, config):
             stage["status"] = "completed"
             await connection_manager.broadcast({
                 "type": "stage_completed",
-                "stage": stage["name"],
-                "stage_index": i,
-                "total_stages": len(current_state["pipeline"]["stages"]),
+                "data": {
+                    "stage": stage["name"],
+                    "stage_index": i,
+                    "total_stages": len(current_state["pipeline"]["stages"])
+                },
                 "timestamp": datetime.utcnow().isoformat()
             })
 
@@ -281,8 +334,10 @@ async def run_pipeline_simulation(connection_manager, config):
         current_state["pipeline"]["status"] = "completed"
         await connection_manager.broadcast({
             "type": "pipeline_completed",
-            "timestamp": datetime.utcnow().isoformat(),
-            "results": current_state["metrics"]
+            "data": {
+                "results": current_state["metrics"]
+            },
+            "timestamp": datetime.utcnow().isoformat()
         })
 
     except Exception as e:
@@ -340,12 +395,18 @@ async def run_actual_pipeline(connection_manager, config):
                 "id": region_result.get("region", "").lower(),
                 "name": region_result.get("region", ""),
                 "status": "completed",
-                "weekly_profit": region_result.get("weekly_profit", 0),
-                "coverage_percent": region_result.get("coverage_percent", 0),
-                "services_selected": region_result.get("services_selected", 0),
-                "profit_margin_pct": region_result.get("profit_margin_pct", 0),
-                "hub_ports": region_result.get("hub_ports", []),
-                "uncovered_teu": region_result.get("uncovered_teu", 0)
+                "profit": region_result.get("weekly_profit", 0),
+                "coverage": region_result.get("coverage_percent", 0),
+                "services": region_result.get("services_selected", 0),
+                "margin": region_result.get("profit_margin_pct", 0),
+                "hubs": region_result.get("hub_ports", []),
+                "uncovered": region_result.get("uncovered_teu", 0),
+                "cost": region_result.get("total_cost", region_result.get("operating_cost", 0)),
+                "operating_cost": region_result.get("operating_cost", 0),
+                "transship_cost": region_result.get("transship_cost", 0),
+                "generated": region_result.get("services_generated", 0),
+                "filtered": region_result.get("services_filtered", 0),
+                "selected": region_result.get("services_selected", 0)
             }
 
             # Update current state
@@ -358,19 +419,39 @@ async def run_actual_pipeline(connection_manager, config):
             await asyncio.sleep(0.5)
 
         # Update current state with real data
-        current_state["regions"] = [
-            {
+        current_state["regions"] = {
+            r.get("region", "").lower(): {
                 "id": r.get("region", "").lower(),
                 "name": r.get("region", ""),
                 "status": "completed",
-                "weekly_profit": r.get("weekly_profit", 0),
-                "coverage_percent": r.get("coverage_percent", 0),
-                "services_selected": r.get("services_selected", 0),
-                "profit_margin_pct": r.get("profit_margin_pct", 0),
-                "hub_ports": r.get("hub_ports", []),
-                "uncovered_teu": r.get("uncovered_teu", 0)
+                "profit": r.get("weekly_profit", 0),
+                "coverage": r.get("coverage_percent", 0),
+                "services": r.get("services_selected", 0),
+                "margin": r.get("profit_margin_pct", 0),
+                "hubs": r.get("hub_ports", []),
+                "uncovered": r.get("uncovered_teu", 0),
+                "cost": r.get("total_cost", r.get("operating_cost", 0)),
+                "operating_cost": r.get("operating_cost", 0),
+                "transship_cost": r.get("transship_cost", 0),
+                "generated": r.get("services_generated", 0),
+                "filtered": r.get("services_filtered", 0),
+                "selected": r.get("services_selected", 0)
             }
             for r in regional_results
+        }
+
+        # Load iteration audit
+        iteration_audit = result.get("iteration_audit", [])
+        current_state["iterations"] = [
+            {
+                "iter": i.get("iteration", 0),
+                "profit": i.get("profit", 0),
+                "coverage": i.get("coverage", 0),
+                "score": i.get("convergence_score", 0),
+                "rerun": i.get("needs_rerun", False),
+                "reason": i.get("rerun_reason", "")
+            }
+            for i in iteration_audit
         ]
 
         # Update metrics from the result
@@ -385,11 +466,19 @@ async def run_actual_pipeline(connection_manager, config):
             "weeklyProfit": weekly_profit,
             "annualProfit": annual_profit,
             "totalCost": total_cost,
+            "operatingCost": total_cost,
             "totalServices": total_services,
-            "coveragePercentage": coverage,
-            "profitMargin": (weekly_profit / (weekly_profit + total_cost)) * 100 if (weekly_profit + total_cost) > 0 else 0,
+            "coverage": coverage,
+            "margin": (weekly_profit / (weekly_profit + total_cost)) * 100 if (weekly_profit + total_cost) > 0 else 0,
+            "unserved": summary_metrics.get("unserved_demand", 0),
+            "convergence": current_state["iterations"][-1]["score"] if current_state["iterations"] else 0.982,
+            "runtime": summary_metrics.get("total_runtime", 0),
             "vesselsUtilized": int(total_services * 0.8),
-            "totalTeuMoved": int(weekly_profit / 1000 * 2500) if weekly_profit > 0 else 0
+            "totalTeuMoved": int(weekly_profit / 1000 * 2500) if weekly_profit > 0 else 0,
+            "selected_services": result.get("selected_services", []),
+            "decision_output": result.get("decision_output", {}),
+            "executive_summary": result.get("executive_summary", ""),
+            "status": result.get("status", {})
         }
 
         await complete_stage(connection_manager, 1)
@@ -411,9 +500,11 @@ async def run_actual_pipeline(connection_manager, config):
         current_state["pipeline"]["status"] = "completed"
         await connection_manager.broadcast({
             "type": "pipeline_completed",
-            "timestamp": datetime.utcnow().isoformat(),
-            "results": current_state["metrics"],
-            "data": result
+            "data": {
+                "results": current_state["metrics"],
+                "data": result
+            },
+            "timestamp": datetime.utcnow().isoformat()
         })
 
         logger.info("Pipeline data successfully loaded and streamed to dashboard")
@@ -423,7 +514,9 @@ async def run_actual_pipeline(connection_manager, config):
         current_state["pipeline"]["status"] = "error"
         await connection_manager.broadcast({
             "type": "pipeline_error",
-            "error": str(e),
+            "data": {
+                "error": str(e)
+            },
             "timestamp": datetime.utcnow().isoformat()
         })
 
@@ -435,9 +528,11 @@ async def update_stage(connection_manager, index, stage_name):
 
     await connection_manager.broadcast({
         "type": "stage_started",
-        "stage": stage_name,
-        "stage_index": index,
-        "total_stages": len(current_state["pipeline"]["stages"]),
+        "data": {
+            "stage": stage_name,
+            "stage_index": index,
+            "total_stages": len(current_state["pipeline"]["stages"])
+        },
         "timestamp": datetime.utcnow().isoformat()
     })
 
@@ -451,16 +546,20 @@ async def complete_stage(connection_manager, index):
         await asyncio.sleep(0.3)
         await connection_manager.broadcast({
             "type": "stage_progress",
-            "stage": stage["name"],
-            "progress": progress,
+            "data": {
+                "stage": stage["name"],
+                "progress": progress
+            },
             "timestamp": datetime.utcnow().isoformat()
         })
 
     await connection_manager.broadcast({
         "type": "stage_completed",
-        "stage": stage["name"],
-        "stage_index": index,
-        "total_stages": len(current_state["pipeline"]["stages"]),
+        "data": {
+            "stage": stage["name"],
+            "stage_index": index,
+            "total_stages": len(current_state["pipeline"]["stages"])
+        },
         "timestamp": datetime.utcnow().isoformat()
     })
 

@@ -1,10 +1,15 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import LiveDashboard from './components/live/LiveDashboard';
+import MaritimeDashboard from './MaritimeDashboard.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import './index.css';
+
+console.log('Loading maritime dashboard...');
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <LiveDashboard />
+    <ErrorBoundary>
+      <MaritimeDashboard />
+    </ErrorBoundary>
   </React.StrictMode>
 );

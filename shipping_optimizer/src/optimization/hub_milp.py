@@ -325,6 +325,32 @@ class HubMILP:
             unserved=round(unserved_teu, 2),
         )
 
+        # Extract selected services with their loads
+        selected_services_data = []
+        service_loads = defaultdict(float)
+        for (d, s), var in flow.items():
+            val = pulp.value(var) or 0.0
+            if val > 0:
+                service_loads[s] += val
+        
+        for (d_idx, s1, s2), var in transfer_flow.items():
+            val = pulp.value(var) or 0.0
+            if val > 0:
+                # Flow on s1 from origin to hub, on s2 from hub to destination
+                service_loads[s1] += val
+                service_loads[s2] += val
+
+        for s_idx, load in service_loads.items():
+            if load > 0:
+                svc = self.problem.services[s_idx]
+                selected_services_data.append({
+                    "id": svc.id,
+                    "ports": svc.ports,
+                    "load": float(load),
+                    "capacity": float(svc.capacity),
+                    "cost": float(svc.weekly_cost)
+                })
+
         return {
             "status":            status,
             "profit":            float(profit_v),
@@ -340,7 +366,6 @@ class HubMILP:
             "unserved_demand":   float(unserved_teu),
             "num_direct_vars":   len(flow),
             "num_transfer_vars": len(transfer_flow),
-            "num_services_used": sum(
-                1 for s in range(len(services_mask)) if services_mask[s]
-            ),
+            "num_services_used": len(selected_services_data),
+            "selected_services": selected_services_data
         }

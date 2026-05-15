@@ -6,7 +6,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { usePipelineStatus } from '../../hooks/useApiData';
-import useDashboardStore from '../../store/dashboardStore';
+import useDashboardStore from '../../store/dashboardStore.js';
 
 const StageNode = ({ stage, isActive, isCompleted, isNext, progress }) => {
   return (

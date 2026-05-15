@@ -227,6 +227,14 @@ class RegionalAgent(BaseAgent):
             )
             cluster_results.append(milp.solve())
 
+        # Aggregate services and clusters
+        all_selected_services = []
+        for r in cluster_results:
+            if "selected_services" in r:
+                for svc in r["selected_services"]:
+                    svc["region"] = self.region
+                    all_selected_services.append(svc)
+
         # ── Aggregate — use regional total_demand as denominator ────────
         # (Not sum of cluster total_demand which double-counts cross-cluster OD)
         profit         = sum(r["profit"]           for r in cluster_results)
@@ -298,28 +306,16 @@ class RegionalAgent(BaseAgent):
             explanation = (
                 f"Verdict: {verdict}\n"
                 f"  Profit margin {profit_margin_pct}% with coverage {coverage:.1f}%.\n\n"
-                f"Strengths:\n"
-                f"- Weekly profit ${profit:,.0f} ({services_selected} services) -> "
-                f"${profit_per_service:,.0f}/service/week.\n"
-                f"- Satisfied {satisfied:,.0f} TEU/wk at {coverage:.1f}% coverage.\n\n"
-                f"Weaknesses:\n"
-                f"- {uncovered_pct:.1f}% unserved ({unserved_teu:,.0f} TEU/wk).\n"
-                f"- Transshipment ${transship_cost:,.0f} + port ${port_cost:,.0f}/wk.\n\n"
-                f"Improvement Actions:\n"
-                f"- Add services to {unserved_line} corridor.\n"
-                f"- Expand hub [{hub_ids_str}] by {max(3, int(services_selected * 0.1))} services."
+                f"Strengths:\n- Weekly profit ${profit:,.0f} ({services_selected} services) -> ${profit_per_service:,.0f}/service/week.\n- Satisfied {satisfied:,.0f} TEU/wk at {coverage:.1f}% coverage.\n\n"
+                f"Weaknesses:\n- {uncovered_pct:.1f}% unserved ({unserved_teu:,.0f} TEU/wk).\n- Transshipment ${transship_cost:,.0f} + port ${port_cost:,.0f}/wk.\n\n"
+                f"Improvement Actions:\n- Add services to {unserved_line} corridor.\n- Expand hub [{hub_ids_str}] by {int(uncovered_pct/5 + 1)} services."
             )
 
-        elapsed = round(time.perf_counter() - t0, 2)
-        logger.info(
-            "regional_agent_complete",
-            region=self.region, profit=profit, coverage=coverage, elapsed=elapsed,
-        )
-
+        elapsed = time.perf_counter() - t0
         return {
             "agent":               self.name,
             "region":              self.region,
-            "status":              "Optimal",
+            "status":              cluster_results[0]["status"] if cluster_results else "No clusters",
             "services_generated":  services_generated,
             "services_filtered":   services_filtered,
             "services_selected":   services_selected,
@@ -340,5 +336,6 @@ class RegionalAgent(BaseAgent):
             "hub_ports":           detected_hubs,
             "strategy":            strategy,
             "explanation":         explanation,
-            "elapsed_sec":         elapsed,
+            "selected_services":   all_selected_services,
+            "elapsed_sec":         round(elapsed, 1),
         }

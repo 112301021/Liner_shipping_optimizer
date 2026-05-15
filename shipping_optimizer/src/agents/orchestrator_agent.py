@@ -407,21 +407,23 @@ class OrchestratorAgent(BaseAgent):
                         agent = self.regional_agents[i]
                         region_id = agent.name.replace("regional_", "")
                         self.callback("region_updated", {
-                            "region_id": region_id,
-                            "name": region_id.title(),
-                            "profit": result.get("weekly_profit", 0),
-                            "coverage": result.get("coverage_percent", 0),
-                            "services": result.get("services_selected", 0),
-                            "margin": ((result.get("weekly_profit", 0) /
-                                       (result.get("weekly_profit", 0) + result.get("total_cost", 0))) * 100)
-                                     if result.get("weekly_profit", 0) + result.get("total_cost", 0) > 0 else 0,
-                            "cost": result.get("operating_cost", 0),
-                            "uncovered": result.get("unserved_demand", 0),
-                            "hubs": result.get("hub_ports", []),
-                            "strategy": "hybrid",
-                            "generated": result.get("services_generated", 0),
-                            "filtered": result.get("services_filtered", 0),
-                            "selected": result.get("services_selected", 0)
+                            "data": {
+                                "region_id": region_id,
+                                "name": region_id.title(),
+                                "profit": result.get("weekly_profit", 0),
+                                "coverage": result.get("coverage_percent", 0),
+                                "services": result.get("services_selected", 0),
+                                "margin": ((result.get("weekly_profit", 0) /
+                                           (result.get("weekly_profit", 0) + result.get("total_cost", 0))) * 100)
+                                         if result.get("weekly_profit", 0) + result.get("total_cost", 0) > 0 else 0,
+                                "cost": result.get("operating_cost", 0),
+                                "uncovered": result.get("unserved_demand", 0),
+                                "hubs": result.get("hub_ports", []),
+                                "strategy": "hybrid",
+                                "generated": result.get("services_generated", 0),
+                                "filtered": result.get("services_filtered", 0),
+                                "selected": result.get("services_selected", 0)
+                            }
                         })
 
             # Send callback for regional completion
@@ -642,20 +644,29 @@ class OrchestratorAgent(BaseAgent):
 
         logger.info("orchestrator_complete")
 
+        # Aggregate selected services from all regions
+        all_selected_services = []
+        for r in regional_results:
+            if "selected_services" in r:
+                all_selected_services.extend(r["selected_services"])
+
         # Send final callback
         if self.callback:
             self.callback("pipeline_completed", {
-                "results": {
-                    "weekly_profit": metrics["weekly_profit"],
-                    "annual_profit": metrics["annual_profit"],
-                    "coverage": metrics["coverage"],
-                    "total_services": metrics["total_services"],
-                    "margin": profit_margin_pct,
-                    "operating_cost": metrics["operating_cost"],
-                    "unserved": metrics["unserved_demand"],
-                    "convergence_score": feedback.get("convergence_score", 0),
-                    "iterations": len(self.iteration_audit),
-                    "regional_results": regional_results
+                "data": {
+                    "results": {
+                        "weeklyProfit": metrics["weekly_profit"],
+                        "annualProfit": metrics["annual_profit"],
+                        "coverage": metrics["coverage"],
+                        "totalServices": metrics["total_services"],
+                        "margin": profit_margin_pct,
+                        "operatingCost": metrics["operating_cost"],
+                        "unserved": metrics["unserved_demand"],
+                        "convergenceScore": feedback.get("convergence_score", 0),
+                        "iterations": len(self.iteration_audit),
+                        "regionalResults": regional_results,
+                        "selected_services": all_selected_services
+                    }
                 }
             })
 
@@ -669,4 +680,5 @@ class OrchestratorAgent(BaseAgent):
             "summary_metrics":   metrics,
             "iteration_audit":   self.iteration_audit,
             "iterations_run":    len(self.iteration_audit),
+            "selected_services": all_selected_services
         }

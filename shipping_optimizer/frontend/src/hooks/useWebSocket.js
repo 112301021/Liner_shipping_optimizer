@@ -4,7 +4,7 @@
 
 import { useEffect, useCallback, useRef } from 'react';
 import { WebSocketClient } from '../api/websocket';
-import useDashboardStore from '../store/dashboardStore';
+import useDashboardStore from '../store/dashboardStore.js';
 
 export const useWebSocket = () => {
   const store = useDashboardStore();

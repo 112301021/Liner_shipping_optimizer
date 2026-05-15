@@ -8,7 +8,7 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Phase-1.5 Control Optimizations - Step 1
+
 NO_IMPROVE_LIMIT = 8      # Reduced early stop threshold
 MAX_RUNTIME = 90          # Hard runtime cap in seconds
 
@@ -67,14 +67,6 @@ class ServiceGA:
     #  Demand index                                                         #
     # ------------------------------------------------------------------ #
     def _build_demand_index(self):
-        """
-        For each service, record the sum of weekly TEU for OD pairs
-        that are directly served (both origin AND destination on the route).
-        Also record partial score for services that cover one endpoint.
-
-        Pre-compute port sets and use frozenset keys
-        for faster lookups and reduced O(n²) overhead.
-        """
         # Pre-compute port sets for all services to avoid repeated set creation
         self.service_port_sets = [set(svc.ports) for svc in self.problem.services]
 
@@ -137,10 +129,6 @@ class ServiceGA:
     #  Smart initialisation                                              #
     # ------------------------------------------------------------------ #
     def _random_solution(self) -> List[int]:
-        """
-        Bias initial population toward high-demand services so the GA
-        starts from a meaningful baseline, not a random scatter.
-        """
         scores = self.service_direct_demand + 0.3 * self.service_partial_demand
         total  = scores.sum() or 1.0
         probs  = scores / total          # probability proportional to demand
@@ -169,7 +157,6 @@ class ServiceGA:
         Revenue  = Σ min(svc.capacity, direct_demand_on_route) × rev_per_teu
         Coverage = satisfied_demand / total_demand
 
-        Used bytes instead of tuple for faster cache key
         """
         if not isinstance(services, list):
             return -1e12
@@ -196,7 +183,7 @@ class ServiceGA:
             svc    = self.problem.services[i]
             direct = self.service_direct_demand[i]
 
-            # How much of this service's capacity is actually absorbed by demand?
+            
             # ── Capacity adjusted by cycle time ─────────────────────
             effective_capacity = svc.capacity * (7 / (svc.cycle_time or 7))
             served = min(effective_capacity, direct)
@@ -204,15 +191,13 @@ class ServiceGA:
             # ── Accumulate satisfied demand ─────────────────────────
             satisfied_demand += served
 
-            # ── Yield-based revenue (NEW) ───────────────────────────
+            # ── Yield-based revenue ───────────────────────────
             yield_factor = 0.6 + 0.4 * (served / (effective_capacity or 1))
             revenue += served * self.avg_rev_per_teu * yield_factor
 
             # Track corridor coverage (for per-corridor cap)
-            # PERFORMANCE OPTIMIZATION: Use pre-computed port set
             port_set = self.service_port_sets[i]
             for corridor_key, teu in self.corridor_demand.items():
-                # Convert frozenset back to tuple for compatibility
                 o, d = tuple(corridor_key)
                 if o in port_set and d in port_set:
                     covered_corridors[(o, d)] = (
@@ -247,7 +232,6 @@ class ServiceGA:
         hub_ratio = min(0.7, max(0.3, num_hubs / num_ports))
 
         transship_cost = hub_ratio * satisfied_demand * self.tc_per_teu
-        # PERFORMANCE OPTIMIZATION: Removed duplicate calculation
 
         # ── Penalties ──────────────────────────────────────────────────
         # Unserved demand penalty
@@ -291,7 +275,6 @@ class ServiceGA:
             if off_idx:
                 scores = [self.service_direct_demand[i] for i in off_idx]
                 total  = sum(scores)
-                # PERFORMANCE OPTIMIZATION: Fix zero-weight issue
                 if total > 0:
                     probs = [s / total for s in scores]
                     idx = random.choices(off_idx, weights=probs)[0]

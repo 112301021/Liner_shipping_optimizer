@@ -44,17 +44,14 @@ class RealOrchestratorIntegration:
             await self._broadcast_event("pipeline_started", {
                     "timestamp": datetime.now().isoformat(),
                     "config": config
-                }
-            })
+                })
 
             # Step 1: Load problem
-            await self._broadcast_event(
-                "stage_started", {
+            await self._broadcast_event("stage_started", {
                     "stage": "Loading Network Data",
                     "stage_id": "loading",
                     "timestamp": datetime.now().isoformat()
-                }
-            })
+                })
 
             dataset_path = config.get("dataset_path", "data/liner_shipping_dataset.csv")
             loader = NetworkLoader()
@@ -62,19 +59,15 @@ class RealOrchestratorIntegration:
             # Check if dataset exists
             if not Path(dataset_path).exists():
                 # Fallback to test data generation
-                await self._broadcast_event(
-                    "type": "pipeline_warning",
-                    "data": {
-                        "message": f"Dataset {dataset_path} not found, using generated test data",
-                        "stage": "loading"
-                    }
+                await self._broadcast_event("pipeline_warning", {
+                    "message": f"Dataset {dataset_path} not found, using generated test data",
+                    "stage": "loading"
                 })
                 problem = await self._generate_test_problem()
             else:
                 problem = loader.load_problem(dataset_path)
 
-            await self._broadcast_event(
-                "stage_completed", {
+            await self._broadcast_event("stage_completed", {
                     "stage": "Loading Network Data",
                     "stats": {
                         "ports": len(problem.ports),
@@ -82,17 +75,14 @@ class RealOrchestratorIntegration:
                         "services": len(getattr(problem, 'services', []))
                     },
                     "timestamp": datetime.now().isoformat()
-                }
-            })
+                })
 
             # Step 2: Initialize orchestrator
-            await self._broadcast_event(
-                "stage_started", {
+            await self._broadcast_event("stage_started", {
                     "stage": "Initializing Orchestrator",
                     "stage_id": "init",
                     "timestamp": datetime.now().isoformat()
-                }
-            })
+                })
 
             orchestrator = OrchestratorAgent()
 
@@ -101,12 +91,10 @@ class RealOrchestratorIntegration:
 
             await asyncio.sleep(1)  # Brief pause for visualization
 
-            await self._broadcast_event(
-                "stage_completed", {
+            await self._broadcast_event("stage_completed", {
                     "stage": "Initializing Orchestrator",
                     "timestamp": datetime.now().isoformat()
-                }
-            })
+                })
 
             # Step 3: Run optimization iterations
             max_iterations = config.get("max_iterations", 3)
@@ -120,8 +108,7 @@ class RealOrchestratorIntegration:
                         "iteration": iteration,
                         "max_iterations": max_iterations,
                         "timestamp": datetime.now().isoformat()
-                    }
-                })
+                    })
 
                 # Decomposition stage
                 await self._run_stage("Problem Decomposition", "decomposition", {
@@ -199,63 +186,50 @@ class RealOrchestratorIntegration:
             await self._update_map_with_corridors(final_results)
 
             # Complete pipeline
-            await self._broadcast_event(
-                "type": "pipeline_completed",
-                "data": {
+            await self._broadcast_event("pipeline_completed", {
                     "timestamp": datetime.now().isoformat(),
                     "duration": (datetime.now() - self.current_run["start_time"]).total_seconds(),
                     "results": final_results,
                     "iterations": results
-                }
-            })
+                })
 
         except Exception as e:
             logger.error(f"Orchestrator integration error: {e}")
-            await self._broadcast_event(
-                "pipeline_error", {
+            await self._broadcast_event("pipeline_error", {
                     "error": str(e),
                     "stage": "unknown",
                     "timestamp": datetime.now().isoformat()
-                }
-            })
+                })
         finally:
             self.is_running = False
 
     async def _run_stage(self, stage_name: str, stage_id: str, metadata: Dict[str, Any]):
         """Run a pipeline stage with progress updates"""
-        await self._broadcast_event(
-            "type": "stage_started",
-            "data": {
+        await self._broadcast_event("stage_started", {
                 "stage": stage_name,
                 "stage_id": stage_id,
                 "metadata": metadata,
                 "timestamp": datetime.now().isoformat()
-            }
-        })
+            })
 
         # Simulate stage work with progress updates
         for progress in [25, 50, 75]:
             if not self.is_running:
                 break
             await asyncio.sleep(0.5)
-            await self._broadcast_event(
-                "stage_progress", {
+            await self._broadcast_event("stage_progress", {
                     "stage": stage_name,
                     "stage_id": stage_id,
                     "progress": progress,
                     "timestamp": datetime.now().isoformat()
-                }
-            })
+                })
 
         await asyncio.sleep(0.5)
-        await self._broadcast_event(
-            "type": "stage_completed",
-            "data": {
+        await self._broadcast_event("stage_completed", {
                 "stage": stage_name,
                 "stage_id": stage_id,
                 "timestamp": datetime.now().isoformat()
-            }
-        })
+            })
 
     async def _process_region(self, region_id: str, problem, iteration: int) -> Dict[str, Any]:
         """Process a single region"""
